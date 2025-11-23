@@ -12,7 +12,8 @@ const FUEL_CONSUMPTION_RATE = 0.05;
 const FUEL_REFILL_RATE = 0.8;
 const RIVER_SEGMENT_HEIGHT = 20;
 const MAX_LEADERBOARD_ENTRIES = 5;
-const SHOOTING_START_FRAME = 1800; // REDUCED: 30 seconds * 60 FPS (was 3600)
+const SHOOTING_START_FRAME = 1800; 
+const BOSS_SPAWN_INTERVAL = 3600; // Every 60 seconds (60 * 60)
 
 export const RiverRaidGame: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -21,8 +22,8 @@ export const RiverRaidGame: React.FC = () => {
   const [uiGameState, setUiGameState] = useState<GameState>(GameState.START);
   const [inputValue, setInputValue] = useState("");
   
-  // Input Controls State
-  const [controlMode, setControlMode] = useState<'JOYSTICK' | 'BUTTONS'>('JOYSTICK');
+  // Input Controls State - DEFAULT CHANGED TO BUTTONS
+  const [controlMode, setControlMode] = useState<'JOYSTICK' | 'BUTTONS'>('BUTTONS');
 
   // Joystick State
   const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
@@ -63,6 +64,7 @@ export const RiverRaidGame: React.FC = () => {
     difficulty: 1.0,
     highScores: [] as LeaderboardEntry[],
     playerNameInput: "",
+    bossActive: false,
   });
 
   // --- Audio System ---
@@ -245,7 +247,6 @@ export const RiverRaidGame: React.FC = () => {
      setJoystickPos({ x: clampedX, y: clampedY });
 
      // Map to keys with REDUCED SENSITIVITY (Higher Deadzone)
-     // Previous deadzone was 10. Increasing to 25 makes it less "twitchy".
      const deadzone = 25; 
      state.current.keys['ArrowLeft'] = clampedX < -deadzone;
      state.current.keys['ArrowRight'] = clampedX > deadzone;
@@ -291,6 +292,7 @@ export const RiverRaidGame: React.FC = () => {
       s.gameFrameCount = 0;
       s.difficulty = 1.0;
       s.playerNameInput = "";
+      s.bossActive = false;
       setInputValue("");
     }
 
@@ -366,8 +368,37 @@ export const RiverRaidGame: React.FC = () => {
     }
   };
 
+  const spawnBoss = () => {
+    const s = state.current;
+    // Calculate HP: Starts at 5 (at frame 3600), increases by 2 every subsequent boss (every 3600 frames = 2 steps of 1800)
+    // Frame 3600 / 1800 = 2.  3 + 2 = 5 HP.
+    // Frame 7200 / 1800 = 4.  3 + 4 = 7 HP.
+    const difficultyStep = Math.floor(s.gameFrameCount / 1800);
+    const hp = 3 + difficultyStep;
+
+    s.bossActive = true;
+    s.enemies.push({
+        type: EnemyType.BOSS,
+        x: CANVAS_WIDTH / 2 - 40,
+        y: -100, // Start above screen
+        width: 80,
+        height: 60,
+        vx: 2,
+        vy: 1, 
+        hp: hp,
+        maxHp: hp,
+        shootTimer: 60,
+        markedForDeletion: false
+    });
+    // Announcement effect
+    createExplosion(CANVAS_WIDTH/2, 100, '#ef4444', 20);
+  };
+
   const spawnEnemy = (riverSegment: { y: number, centerX: number, width: number }) => {
       const s = state.current;
+      // Don't spawn normal enemies if boss is active (except powerups rarely)
+      if (s.bossActive && Math.random() > 0.1) return;
+
       const typeRoll = Math.random();
       let type = EnemyType.SHIP;
       let width = 30;
@@ -375,7 +406,6 @@ export const RiverRaidGame: React.FC = () => {
       let speedX = 0;
       let speedY = 0; 
 
-      // Increased Life Orb spawn chance from 0.01 to 0.05
       if (typeRoll < 0.05) {
           type = EnemyType.LIFE_ORB; width = 20; height = 20; speedY = 0;
       }
@@ -419,6 +449,8 @@ export const RiverRaidGame: React.FC = () => {
         height,
         vx: speedX,
         vy: speedY, 
+        hp: 1,
+        maxHp: 1,
         shootTimer: Math.floor(Math.random() * 60 + 60), 
         markedForDeletion: false
       });
@@ -461,12 +493,16 @@ export const RiverRaidGame: React.FC = () => {
               cost = 25;
               if (s.player.gold >= cost) {
                   s.enemies.forEach(e => {
-                      if (e.type !== EnemyType.GOLD_COIN && e.type !== EnemyType.FUEL_DEPOT && e.type !== EnemyType.LIFE_ORB && e.type !== EnemyType.WEAPON_CRATE) {
+                      if (e.type !== EnemyType.GOLD_COIN && e.type !== EnemyType.FUEL_DEPOT && e.type !== EnemyType.LIFE_ORB && e.type !== EnemyType.WEAPON_CRATE && e.type !== EnemyType.BOSS) {
                           if (e.y > 0 && e.y < CANVAS_HEIGHT) {
                               e.markedForDeletion = true;
                               createExplosion(e.x + e.width/2, e.y + e.height/2, 'orange', 15);
                               s.player.score += 50;
                           }
+                      }
+                      if (e.type === EnemyType.BOSS) {
+                          e.hp -= 20; // Nuke damages boss
+                          createExplosion(e.x + e.width/2, e.y + e.height/2, 'orange', 30);
                       }
                   });
                   s.bullets.forEach(b => b.markedForDeletion = true);
@@ -491,13 +527,21 @@ export const RiverRaidGame: React.FC = () => {
     s.gameFrameCount++;
 
     // Time Bonus & Difficulty Increase
-    // CHANGED: Reduced interval from 900 to 450 to double the difficulty progression speed.
-    if (s.gameFrameCount % 450 === 0 && s.gameFrameCount > 0) {
-        const difficultyStep = Math.floor(s.gameFrameCount / 450);
+    // CHANGED: Slowed down difficulty progression significantly (30s instead of 7.5s)
+    if (s.gameFrameCount % 1800 === 0 && s.gameFrameCount > 0) {
+        const difficultyStep = Math.floor(s.gameFrameCount / 1800);
         s.difficulty = 1.0 + (difficultyStep * 0.1); 
         
         s.player.score += 500;
-        createExplosion(CANVAS_WIDTH/2, CANVAS_HEIGHT/2, '#fbbf24', 40);
+        // Small celebration for difficulty up, but check if boss is spawning
+        if (s.gameFrameCount % BOSS_SPAWN_INTERVAL !== 0) {
+            createExplosion(CANVAS_WIDTH/2, CANVAS_HEIGHT/2, '#fbbf24', 40);
+        }
+    }
+
+    // Boss Spawn Logic
+    if (s.gameFrameCount % BOSS_SPAWN_INTERVAL === 0 && !s.bossActive) {
+        spawnBoss();
     }
 
     const currentScrollSpeed = BASE_SCROLL_SPEED * Math.min(2.0, s.difficulty);
@@ -563,38 +607,72 @@ export const RiverRaidGame: React.FC = () => {
 
     // 3. Update Entities
     s.enemies.forEach(enemy => {
-      enemy.y += currentScrollSpeed + (enemy.vy || 0);
-      enemy.x += enemy.vx;
+      
+      if (enemy.type === EnemyType.BOSS) {
+          // Boss Logic:
+          // Stay near top of screen (y = 80-120), oscillate X
+          if (enemy.y < 80) enemy.y += 2; // Fly in
+          else enemy.y = 80 + Math.sin(s.gameFrameCount / 50) * 20;
 
-      if (enemy.type === EnemyType.HELICOPTER) {
-         if (enemy.x <= 50 || enemy.x + enemy.width >= CANVAS_WIDTH - 50) enemy.vx *= -1;
-      }
-
-      // Shooting Logic
-      if (s.gameFrameCount > SHOOTING_START_FRAME) {
-          if (enemy.y > 0 && enemy.y < CANVAS_HEIGHT - 100) { 
-             if (enemy.type === EnemyType.SHIP || enemy.type === EnemyType.HELICOPTER || enemy.type === EnemyType.JET) {
-                 enemy.shootTimer--;
-                 if (enemy.shootTimer <= 0) {
-                     const bulletSpeed = 4 + s.difficulty;
-                     s.bullets.push({
-                         x: enemy.x + enemy.width / 2 - 3,
-                         y: enemy.y + enemy.height,
-                         width: 6,
-                         height: 6,
-                         vx: 0,
-                         vy: -bulletSpeed, 
-                         isEnemy: true,
-                         markedForDeletion: false
-                     });
-                     enemy.shootTimer = Math.max(30, 120 - (s.difficulty * 20));
-                 }
-             }
+          // Move X
+          enemy.x += enemy.vx;
+          if (enemy.x <= 20 || enemy.x + enemy.width >= CANVAS_WIDTH - 20) {
+              enemy.vx *= -1;
           }
+
+          // Boss Shooting
+          enemy.shootTimer--;
+          if (enemy.shootTimer <= 0) {
+             const bulletSpeed = 5 + s.difficulty;
+             // Spread shot
+             s.bullets.push(
+                { x: enemy.x + enemy.width / 2, y: enemy.y + enemy.height, width: 8, height: 12, vx: 0, vy: -bulletSpeed, isEnemy: true, markedForDeletion: false },
+                { x: enemy.x + enemy.width / 2, y: enemy.y + enemy.height, width: 8, height: 12, vx: -2, vy: -bulletSpeed * 0.9, isEnemy: true, markedForDeletion: false },
+                { x: enemy.x + enemy.width / 2, y: enemy.y + enemy.height, width: 8, height: 12, vx: 2, vy: -bulletSpeed * 0.9, isEnemy: true, markedForDeletion: false }
+             );
+             enemy.shootTimer = Math.max(60, 100 - (s.difficulty * 10)); // Fires faster as difficulty goes up
+          }
+      } else {
+        // Standard Enemy Movement
+        enemy.y += currentScrollSpeed + (enemy.vy || 0);
+        enemy.x += enemy.vx;
+
+        if (enemy.type === EnemyType.HELICOPTER) {
+           if (enemy.x <= 50 || enemy.x + enemy.width >= CANVAS_WIDTH - 50) enemy.vx *= -1;
+        }
+
+        // Standard Shooting Logic
+        if (s.gameFrameCount > SHOOTING_START_FRAME) {
+            if (enemy.y > 0 && enemy.y < CANVAS_HEIGHT - 100) { 
+               if (enemy.type === EnemyType.SHIP || enemy.type === EnemyType.HELICOPTER || enemy.type === EnemyType.JET) {
+                   enemy.shootTimer--;
+                   if (enemy.shootTimer <= 0) {
+                       const bulletSpeed = 4 + s.difficulty;
+                       s.bullets.push({
+                           x: enemy.x + enemy.width / 2 - 3,
+                           y: enemy.y + enemy.height,
+                           width: 6,
+                           height: 6,
+                           vx: 0,
+                           vy: -bulletSpeed, 
+                           isEnemy: true,
+                           markedForDeletion: false
+                       });
+                       enemy.shootTimer = Math.max(30, 120 - (s.difficulty * 20));
+                   }
+               }
+            }
+        }
       }
       
       if (enemy.y > CANVAS_HEIGHT) enemy.markedForDeletion = true;
     });
+    
+    // Check if boss was deleted
+    if (s.bossActive && !s.enemies.some(e => e.type === EnemyType.BOSS)) {
+        s.bossActive = false;
+    }
+    
     s.enemies = s.enemies.filter(e => !e.markedForDeletion);
 
     // Bullets Movement
@@ -682,9 +760,14 @@ export const RiverRaidGame: React.FC = () => {
            createExplosion(enemy.x + enemy.width/2, enemy.y + enemy.height/2, '#06b6d4', 20);
            enemy.markedForDeletion = true;
         } else if (enemy.type !== EnemyType.BRIDGE) {
-           createExplosion(enemy.x + enemy.width/2, enemy.y + enemy.height/2);
-           enemy.markedForDeletion = true;
-           if (!s.player.isInvulnerable) handleDeath("CRASHED INTO ENEMY");
+           // Boss crash collision
+           if (enemy.type === EnemyType.BOSS) {
+               if (!s.player.isInvulnerable) handleDeath("CRASHED INTO BOSS");
+           } else {
+               createExplosion(enemy.x + enemy.width/2, enemy.y + enemy.height/2);
+               enemy.markedForDeletion = true;
+               if (!s.player.isInvulnerable) handleDeath("CRASHED INTO ENEMY");
+           }
         }
       }
     });
@@ -710,6 +793,20 @@ export const RiverRaidGame: React.FC = () => {
                  enemy.markedForDeletion = true;
                  createExplosion(enemy.x, enemy.y, 'white');
                  s.player.score += 10; 
+              } else if (enemy.type === EnemyType.BOSS) {
+                 // Boss Damage Logic
+                 bullet.markedForDeletion = true;
+                 enemy.hp--;
+                 // Small sparkle on hit
+                 createExplosion(bullet.x, bullet.y, '#fff', 2);
+                 if (enemy.hp <= 0) {
+                     enemy.markedForDeletion = true;
+                     createExplosion(enemy.x + enemy.width/2, enemy.y + enemy.height/2, '#facc15', 100);
+                     playExplosionSound();
+                     s.player.score += 5000;
+                     s.player.gold += 50; // Big money reward
+                     s.bossActive = false;
+                 }
               } else {
                  bullet.markedForDeletion = true;
                  enemy.markedForDeletion = true;
@@ -736,7 +833,7 @@ export const RiverRaidGame: React.FC = () => {
       s.player.invulnerableTimer = 120;
       s.player.fuel = MAX_FUEL;
       s.player.weaponType = WeaponType.SINGLE;
-      s.enemies = s.enemies.filter(e => e.y < CANVAS_HEIGHT - 300);
+      // Clear bullets but maybe keep enemies
       s.bullets = []; 
     } else {
       checkHighScore();
@@ -927,6 +1024,29 @@ export const RiverRaidGame: React.FC = () => {
         ctx.beginPath();
         ctx.moveTo(e.x, e.y); ctx.lineTo(e.x + e.width, e.y); ctx.lineTo(e.x + e.width/2, e.y + e.height);
         ctx.fill();
+      } else if (e.type === EnemyType.BOSS) {
+        // Draw BOSS
+        ctx.fillStyle = '#1e1b4b'; // Dark Indigo
+        ctx.beginPath();
+        // Big Wings
+        ctx.moveTo(e.x, e.y + 20);
+        ctx.lineTo(e.x + e.width, e.y + 20);
+        ctx.lineTo(e.x + e.width/2, e.y + e.height);
+        ctx.fill();
+        // Body
+        ctx.fillStyle = '#4c1d95';
+        ctx.fillRect(e.x + e.width/2 - 15, e.y, 30, e.height - 10);
+        // Cockpit
+        ctx.fillStyle = '#facc15';
+        ctx.fillRect(e.x + e.width/2 - 5, e.y + 40, 10, 10);
+
+        // HP Bar
+        const hpPct = Math.max(0, e.hp / e.maxHp);
+        ctx.fillStyle = 'red';
+        ctx.fillRect(e.x, e.y - 10, e.width, 5);
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(e.x, e.y - 10, e.width * hpPct, 5);
+
       } else if (e.type === EnemyType.FUEL_DEPOT) {
         ctx.fillStyle = '#ea580c';
         ctx.fillRect(e.x, e.y, e.width, e.height);
@@ -1058,6 +1178,15 @@ export const RiverRaidGame: React.FC = () => {
     ctx.textAlign = 'right';
     ctx.fillText(`LVL:${s.difficulty.toFixed(1)}`, CANVAS_WIDTH - 20, 60);
     ctx.textAlign = 'left';
+
+    // BOSS WARNING
+    if (s.bossActive) {
+        ctx.fillStyle = `rgba(255, 0, 0, ${0.5 + Math.sin(Date.now() / 100) * 0.5})`;
+        ctx.font = '20px "Press Start 2P"';
+        ctx.textAlign = 'center';
+        ctx.fillText("BOSS BATTLE!", CANVAS_WIDTH/2, 100);
+        ctx.textAlign = 'left';
+    }
 
     // --- Screens ---
     if (s.gameState === GameState.SHOP) {

@@ -45,7 +45,8 @@ export enum EnemyType {
   BRIDGE,
   LIFE_ORB,
   WEAPON_CRATE,
-  GOLD_COIN
+  GOLD_COIN,
+  BOSS // New Enemy Type
 }
 
 export interface Enemy extends Entity {
@@ -53,6 +54,8 @@ export interface Enemy extends Entity {
   vx: number;
   vy: number;
   shootTimer: number; 
+  hp: number; // Hit Points
+  maxHp: number; // Max Hit Points for health bar
 }
 
 export interface Bullet extends Entity {

@@ -27,6 +27,7 @@ export const RiverRaidGame: React.FC = () => {
   
   // Debug / Setup State
   const [showSqlModal, setShowSqlModal] = useState(false);
+  const [debugIpDisplay, setDebugIpDisplay] = useState<string>("Scanning...");
 
   // Input Controls State - DEFAULT CHANGED TO BUTTONS
   const [controlMode, setControlMode] = useState<'JOYSTICK' | 'BUTTONS'>('BUTTONS');
@@ -79,36 +80,53 @@ export const RiverRaidGame: React.FC = () => {
     bossActive: false,
   });
 
-  // --- Initialize IP Address ---
+  // --- Robust IP Fetcher ---
+  const ensureIp = async (): Promise<string | null> => {
+      // Return cached if available
+      if (userIpRef.current) return userIpRef.current;
+
+      console.log("Attempting to fetch IP...");
+      
+      const services = [
+          // 1. Ipify (Standard JSON)
+          { url: 'https://api.ipify.org?format=json', type: 'json', key: 'ip' },
+          // 2. DB-IP (Alternative JSON)
+          { url: 'https://api.db-ip.com/v2/free/self', type: 'json', key: 'ipAddress' },
+          // 3. ICanHazIP (Text fallback)
+          { url: 'https://ipv4.icanhazip.com/', type: 'text' }
+      ];
+
+      for (const svc of services) {
+          try {
+              const res = await fetch(svc.url);
+              if (res.ok) {
+                  let ip = "";
+                  if (svc.type === 'json') {
+                      const data = await res.json();
+                      ip = data[svc.key || 'ip'];
+                  } else {
+                      ip = (await res.text()).trim();
+                  }
+
+                  if (ip && ip.length > 5) { // Basic validation
+                      userIpRef.current = ip;
+                      console.log(`IP fetched via ${svc.url}: ${ip}`);
+                      setDebugIpDisplay(ip); // Update UI for debug
+                      return ip;
+                  }
+              }
+          } catch (e) {
+              console.warn(`Failed to fetch IP from ${svc.url}`);
+          }
+      }
+      
+      setDebugIpDisplay("Failed to detect");
+      return null;
+  };
+
+  // --- Initialize IP Address on Mount ---
   useEffect(() => {
-      const fetchIp = async () => {
-          // 1. Try ipify
-          try {
-              const res = await fetch('https://api.ipify.org?format=json');
-              const data = await res.json();
-              if (data.ip) {
-                  userIpRef.current = data.ip;
-                  console.log("IP cached (ipify):", data.ip);
-                  return;
-              }
-          } catch (e) {
-              console.warn("Ipify failed, trying backup...");
-          }
-
-          // 2. Try backup (icanhazip) - Text response
-          try {
-              const res = await fetch('https://ipv4.icanhazip.com/');
-              const text = await res.text();
-              if (text) {
-                  userIpRef.current = text.trim();
-                  console.log("IP cached (backup):", userIpRef.current);
-              }
-          } catch (e) {
-              console.warn("All IP fetch methods failed.");
-          }
-      };
-
-      fetchIp();
+      ensureIp();
   }, []);
 
   // --- Audio System ---
@@ -355,20 +373,20 @@ export const RiverRaidGame: React.FC = () => {
         try {
             console.log("Attempting to save score to Supabase...");
             
-            const payload: any = { name, score };
-            
-            // Use cached IP if available
-            if (userIpRef.current) {
-                payload.ip_address = userIpRef.current;
-            } else {
-                console.warn("IP Address was not cached, trying emergency fetch...");
-                try {
-                    // Last ditch attempt
-                    const res = await fetch('https://api.ipify.org?format=json');
-                    const data = await res.json();
-                    if (data.ip) payload.ip_address = data.ip;
-                } catch(e) {}
+            // Ensure IP is fetched (retry if missing)
+            let ipAddress = userIpRef.current;
+            if (!ipAddress) {
+                console.warn("IP missing during save, forcing fetch...");
+                ipAddress = await ensureIp();
             }
+
+            const payload: any = { 
+                name, 
+                score, 
+                ip_address: ipAddress // Might still be null if all services fail
+            };
+            
+            console.log("Saving payload:", payload);
 
             const { error } = await supabase.from('scores').insert([payload]);
             
@@ -1670,6 +1688,11 @@ export const RiverRaidGame: React.FC = () => {
                             VERITABANI KURULUMU (SQL)
                          </button>
                      )}
+                </div>
+
+                {/* Debug IP Display */}
+                <div className="absolute bottom-2 right-2 text-[8px] text-zinc-600 font-sans pointer-events-auto bg-black/40 px-1 rounded">
+                    Client ID: {debugIpDisplay}
                 </div>
             </div>
         )}

@@ -1,3 +1,4 @@
+
 import React, { useEffect, useRef, useState } from 'react';
 import { GameState, Player, Enemy, EnemyType, Bullet, Particle, LeaderboardEntry, WeaponType, Decoration, DecorationType } from '../types';
 import { supabase } from '../supabaseClient';
@@ -41,6 +42,9 @@ export const RiverRaidGame: React.FC = () => {
   const bossMusicGainRef = useRef<GainNode | null>(null);
   const bossLfoRef = useRef<OscillatorNode | null>(null);
 
+  // User IP Cache
+  const userIpRef = useRef<string | null>(null);
+
   const state = useRef({
     gameState: GameState.START,
     keys: {} as { [key: string]: boolean },
@@ -74,6 +78,38 @@ export const RiverRaidGame: React.FC = () => {
     playerNameInput: "",
     bossActive: false,
   });
+
+  // --- Initialize IP Address ---
+  useEffect(() => {
+      const fetchIp = async () => {
+          // 1. Try ipify
+          try {
+              const res = await fetch('https://api.ipify.org?format=json');
+              const data = await res.json();
+              if (data.ip) {
+                  userIpRef.current = data.ip;
+                  console.log("IP cached (ipify):", data.ip);
+                  return;
+              }
+          } catch (e) {
+              console.warn("Ipify failed, trying backup...");
+          }
+
+          // 2. Try backup (icanhazip) - Text response
+          try {
+              const res = await fetch('https://ipv4.icanhazip.com/');
+              const text = await res.text();
+              if (text) {
+                  userIpRef.current = text.trim();
+                  console.log("IP cached (backup):", userIpRef.current);
+              }
+          } catch (e) {
+              console.warn("All IP fetch methods failed.");
+          }
+      };
+
+      fetchIp();
+  }, []);
 
   // --- Audio System ---
   const initAudio = () => {
@@ -311,17 +347,6 @@ export const RiverRaidGame: React.FC = () => {
     setLoadingScores(false);
   };
 
-  const getIpAddress = async (): Promise<string | null> => {
-      try {
-          const response = await fetch('https://api.ipify.org?format=json');
-          const data = await response.json();
-          return data.ip;
-      } catch (error) {
-          console.error("Failed to fetch IP address", error);
-          return null;
-      }
-  };
-
   const saveHighScores = async (name: string, score: number) => {
     setLoadingScores(true);
     
@@ -330,18 +355,19 @@ export const RiverRaidGame: React.FC = () => {
         try {
             console.log("Attempting to save score to Supabase...");
             
-            // Try to fetch IP address
-            let ipAddress = null;
-            try {
-                ipAddress = await getIpAddress();
-                console.log("User IP fetched:", ipAddress);
-            } catch(e) {
-                console.warn("Could not fetch IP for score submission");
-            }
-
             const payload: any = { name, score };
-            if (ipAddress) {
-                payload.ip_address = ipAddress;
+            
+            // Use cached IP if available
+            if (userIpRef.current) {
+                payload.ip_address = userIpRef.current;
+            } else {
+                console.warn("IP Address was not cached, trying emergency fetch...");
+                try {
+                    // Last ditch attempt
+                    const res = await fetch('https://api.ipify.org?format=json');
+                    const data = await res.json();
+                    if (data.ip) payload.ip_address = data.ip;
+                } catch(e) {}
             }
 
             const { error } = await supabase.from('scores').insert([payload]);
@@ -1657,7 +1683,7 @@ export const RiverRaidGame: React.FC = () => {
                     <div className="bg-red-900/30 p-2 mb-3 rounded border border-red-800">
                         <p className="text-red-200 text-[10px] font-mono mb-1">HATA: Tablo eksik veya güncel değil.</p>
                         <p className="text-zinc-300 text-[10px] font-sans">
-                            <strong>IP Adresi Kaydı</strong> özelliği eklendiği için veritabanı tablosunun güncellenmesi gerekiyor.
+                            <strong>IP Adresi Kaydı</strong> (NULL hatasını düzeltmek için) aşağıdaki SQL komutunu tekrar çalıştırın.
                         </p>
                     </div>
 
@@ -1666,7 +1692,7 @@ export const RiverRaidGame: React.FC = () => {
                     </p>
                     <ol className="text-zinc-300 text-[10px] list-decimal list-inside mb-3 font-sans space-y-1">
                         <li>Supabase panelini açın > <strong>SQL Editor</strong> > <strong>New Query</strong>.</li>
-                        <li>Tablo zaten varsa sadece şu satırı çalıştırın: <span className="text-green-400 font-mono">alter table scores add column if not exists ip_address text;</span></li>
+                        <li>Tablo zaten varsa (oyun çalışıyorsa) sadece şunu çalıştırın: <span className="text-green-400 font-mono">alter table scores add column if not exists ip_address text;</span></li>
                         <li>Tablo hiç yoksa aşağıdaki kodun tamamını çalıştırın.</li>
                     </ol>
 

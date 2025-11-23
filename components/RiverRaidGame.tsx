@@ -12,7 +12,7 @@ const MAX_FUEL = 100;
 const FUEL_CONSUMPTION_RATE = 0.05;
 const FUEL_REFILL_RATE = 0.8;
 const RIVER_SEGMENT_HEIGHT = 20;
-const MAX_LEADERBOARD_ENTRIES = 10; // Increased for global board
+const MAX_LEADERBOARD_ENTRIES = 20; // Increased to 20
 const SHOOTING_START_FRAME = 1800; 
 const BOSS_SPAWN_INTERVAL = 3600; // Every 60 seconds (60 * 60)
 
@@ -301,11 +301,7 @@ export const RiverRaidGame: React.FC = () => {
     if (stored) {
       state.current.highScores = JSON.parse(stored);
     } else {
-      state.current.highScores = [
-        { name: "ACE", score: 5000 },
-        { name: "PIL", score: 3000 },
-        { name: "CPU", score: 1000 },
-      ];
+      state.current.highScores = [];
     }
     setLoadingScores(false);
   };
@@ -1072,6 +1068,7 @@ export const RiverRaidGame: React.FC = () => {
   };
 
   const submitHighScore = async (name: string) => {
+      if (loadingScores) return; // Guard against multiple submissions
       const s = state.current;
       const finalName = name.trim().toUpperCase() || "UNK";
       

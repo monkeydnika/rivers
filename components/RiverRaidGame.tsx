@@ -13,23 +13,26 @@ const MAX_FUEL = 100;
 const FUEL_CONSUMPTION_RATE = 0.05;
 const FUEL_REFILL_RATE = 0.8;
 const RIVER_SEGMENT_HEIGHT = 20;
-const MAX_LEADERBOARD_ENTRIES = 20; // Increased to 20
+const MAX_LEADERBOARD_ENTRIES = 20;
 const SHOOTING_START_FRAME = 1800; 
-const BOSS_SPAWN_INTERVAL = 3600; // Every 60 seconds (60 * 60)
+const BOSS_SPAWN_INTERVAL = 3600; // Every 60 seconds
 
 export const RiverRaidGame: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>(0);
-  // Re-render tetiklemek için UI state
+  
+  // UI State
   const [uiGameState, setUiGameState] = useState<GameState>(GameState.START);
   const [inputValue, setInputValue] = useState("");
   const [loadingScores, setLoadingScores] = useState(false);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [saveStatus, setSaveStatus] = useState<string>(""); 
   
   // Debug / Setup State
   const [showSqlModal, setShowSqlModal] = useState(false);
   const [debugIpDisplay, setDebugIpDisplay] = useState<string>("Scanning...");
 
-  // Input Controls State - DEFAULT CHANGED TO BUTTONS
+  // Input Controls State
   const [controlMode, setControlMode] = useState<'JOYSTICK' | 'BUTTONS'>('BUTTONS');
 
   // Joystick State
@@ -37,15 +40,13 @@ export const RiverRaidGame: React.FC = () => {
   const [isJoystickActive, setIsJoystickActive] = useState(false);
   const joystickContainerRef = useRef<HTMLDivElement>(null);
 
-  // Audio Context Ref
+  // Audio Context
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const bossMusicOscRef = useRef<OscillatorNode | null>(null);
-  const bossMusicGainRef = useRef<GainNode | null>(null);
-  const bossLfoRef = useRef<OscillatorNode | null>(null);
 
   // User IP Cache
   const userIpRef = useRef<string | null>(null);
 
+  // Game State Reference (Mutable for performance)
   const state = useRef({
     gameState: GameState.START,
     keys: {} as { [key: string]: boolean },
@@ -58,7 +59,7 @@ export const RiverRaidGame: React.FC = () => {
       vy: 0,
       speedY: 0,
       fuel: MAX_FUEL,
-      lives: 5, // Start with 5 lives
+      lives: 5,
       score: 0,
       gold: 0,
       isInvulnerable: false,
@@ -69,1661 +70,1008 @@ export const RiverRaidGame: React.FC = () => {
     bullets: [] as Bullet[],
     enemies: [] as Enemy[],
     particles: [] as Particle[],
-    riverSegments: [] as { y: number, centerX: number, width: number }[],
     decorations: [] as Decoration[],
-    distanceCounter: 0, 
-    enemySpawnTimer: 0,
-    gameFrameCount: 0, 
-    difficulty: 1.0,
-    highScores: [] as LeaderboardEntry[],
-    playerNameInput: "",
-    bossActive: false,
+    riverSegments: [] as { y: number, centerX: number, width: number }[],
+    frameCount: 0,
+    scrollSpeed: BASE_SCROLL_SPEED,
+    distanceTraveled: 0,
+    level: 1,
+    lastBridgePos: 0,
+    isBossActive: false,
+    joystickVector: { x: 0, y: 0 },
+    lastShotTime: 0
   });
 
-  // --- Robust IP Fetcher ---
-  const ensureIp = async (): Promise<string | null> => {
-      // Return cached if available
-      if (userIpRef.current) return userIpRef.current;
-
-      console.log("Attempting to fetch IP...");
-      
-      const services = [
-          // 1. Ipify (Standard JSON)
-          { url: 'https://api.ipify.org?format=json', type: 'json', key: 'ip' },
-          // 2. DB-IP (Alternative JSON)
-          { url: 'https://api.db-ip.com/v2/free/self', type: 'json', key: 'ipAddress' },
-          // 3. ICanHazIP (Text fallback)
-          { url: 'https://ipv4.icanhazip.com/', type: 'text' }
-      ];
-
-      for (const svc of services) {
-          try {
-              const res = await fetch(svc.url);
-              if (res.ok) {
-                  let ip = "";
-                  if (svc.type === 'json') {
-                      const data = await res.json();
-                      ip = data[svc.key || 'ip'];
-                  } else {
-                      ip = (await res.text()).trim();
-                  }
-
-                  if (ip && ip.length > 5) { // Basic validation
-                      userIpRef.current = ip;
-                      console.log(`IP fetched via ${svc.url}: ${ip}`);
-                      setDebugIpDisplay(ip); // Update UI for debug
-                      return ip;
-                  }
-              }
-          } catch (e) {
-              console.warn(`Failed to fetch IP from ${svc.url}`);
-          }
-      }
-      
-      setDebugIpDisplay("Failed to detect");
-      return null;
-  };
-
-  // --- Initialize IP Address on Mount ---
-  useEffect(() => {
-      ensureIp();
-  }, []);
-
-  // --- Audio System ---
-  const initAudio = () => {
-      if (!audioCtxRef.current) {
-          audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-      }
-      if (audioCtxRef.current.state === 'suspended') {
-          audioCtxRef.current.resume();
-      }
-  };
-
-  const playShootSound = () => {
-      if (!audioCtxRef.current) return;
-      const ctx = audioCtxRef.current;
-      
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      // Atari-style Pew: Square wave dropping in frequency
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(880, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(110, ctx.currentTime + 0.15);
-
-      gain.gain.setValueAtTime(0.05, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
-
-      osc.start();
-      osc.stop(ctx.currentTime + 0.15);
-  };
-
-  const playExplosionSound = () => {
-      if (!audioCtxRef.current) return;
-      const ctx = audioCtxRef.current;
-      
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      // Atari-style Boom: Sawtooth or Square low freq rumble
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(100, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(10, ctx.currentTime + 0.2);
-
-      gain.gain.setValueAtTime(0.1, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
-
-      osc.start();
-      osc.stop(ctx.currentTime + 0.2);
-  };
-
-  const playHitSound = () => {
-      if (!audioCtxRef.current) return;
-      const ctx = audioCtxRef.current;
-      
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      // Stronger "Crunch" Impact
-      // Sawtooth wave dropping fast in pitch creates a 'zap'/'thud' hybrid
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(150, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(10, ctx.currentTime + 0.1);
-
-      // Louder initial attack
-      gain.gain.setValueAtTime(0.15, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
-
-      osc.start();
-      osc.stop(ctx.currentTime + 0.1);
-  };
-
-  const playBossHitSound = () => {
-      if (!audioCtxRef.current) return;
-      const ctx = audioCtxRef.current;
-      
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      // Metallic impact: Square wave quick pitch drop
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(150, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.1);
-
-      gain.gain.setValueAtTime(0.05, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
-
-      osc.start();
-      osc.stop(ctx.currentTime + 0.1);
-  };
-
-  const playCollectSound = () => {
-      if (!audioCtxRef.current) return;
-      const ctx = audioCtxRef.current;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(1200, ctx.currentTime);
-      osc.frequency.linearRampToValueAtTime(1800, ctx.currentTime + 0.1);
-      
-      gain.gain.setValueAtTime(0.05, ctx.currentTime);
-      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.1);
-      
-      osc.start();
-      osc.stop(ctx.currentTime + 0.1);
-  };
-
-  // --- Boss Background Music Logic ---
-  const startBossMusic = () => {
-      if (!audioCtxRef.current) return;
-      if (bossMusicOscRef.current) return; // Already playing
-
-      const ctx = audioCtxRef.current;
-      
-      // Main Drone
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      
-      // LFO for "Siren/Pulse" tension
-      const lfo = ctx.createOscillator();
-      const lfoGain = ctx.createGain();
-
-      // Deep, aggressive drone
-      osc.type = 'sawtooth'; 
-      osc.frequency.value = 55; // A1 (Low)
-      
-      // Rhythmic pulsing (2Hz = 120BPM tempo feel)
-      lfo.type = 'square'; // Abrupt changes for "Emergency" feel
-      lfo.frequency.value = 4; 
-      lfoGain.gain.value = 15; // Modulate pitch
-
-      lfo.connect(lfoGain);
-      lfoGain.connect(osc.frequency);
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      
-      gain.gain.setValueAtTime(0, ctx.currentTime);
-      gain.gain.linearRampToValueAtTime(0.08, ctx.currentTime + 0.5); // Louder volume
-
-      osc.start();
-      lfo.start();
-
-      bossMusicOscRef.current = osc;
-      bossMusicGainRef.current = gain;
-      bossLfoRef.current = lfo;
-  };
-
-  const stopBossMusic = () => {
-      if (!bossMusicOscRef.current || !audioCtxRef.current) return;
-      
-      const ctx = audioCtxRef.current;
-      const gain = bossMusicGainRef.current;
-      const osc = bossMusicOscRef.current;
-      const lfo = bossLfoRef.current;
-
-      // Fade out
-      if (gain) {
-        try {
-            gain.gain.cancelScheduledValues(ctx.currentTime);
-            gain.gain.setValueAtTime(gain.gain.value, ctx.currentTime);
-            gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.5);
-        } catch (e) {}
-      }
-
-      setTimeout(() => {
-          if (osc) try { osc.stop(); } catch(e) {}
-          if (lfo) try { lfo.stop(); } catch(e) {}
-          bossMusicOscRef.current = null;
-          bossMusicGainRef.current = null;
-          bossLfoRef.current = null;
-      }, 500);
-  };
-
-
-  // --- Helpers ---
-  const loadHighScores = async () => {
-    setLoadingScores(true);
-    
-    // 1. Try Supabase
-    if (supabase) {
-        try {
-            console.log("Attempting to load scores from Supabase...");
-            const { data, error } = await supabase
-                .from('scores')
-                .select('name, score')
-                .order('score', { ascending: false })
-                .limit(MAX_LEADERBOARD_ENTRIES);
-            
-            if (error) {
-                // Check if error is 'relation does not exist' (Table missing)
-                // We check for code 42P01 OR the specific message string just to be safe
-                if (error.code === '42P01' || error.message?.includes('42P01') || error.message?.includes('relation "scores" does not exist')) {
-                    console.warn("Supabase table 'scores' not found.");
-                    setShowSqlModal(true);
-                } else {
-                    console.error("Supabase load error detail:", error.message);
-                }
-                throw error;
-            }
-            if (data) {
-                console.log("Scores loaded successfully:", data.length);
-                state.current.highScores = data;
-                setLoadingScores(false);
-                return;
-            }
-        } catch (err) {
-            // Quietly fall through to local storage if DB fails
-        }
-    } else {
-        console.log("Supabase client not initialized (check environment variables).");
-    }
-
-    // 2. Fallback to LocalStorage
-    console.log("Falling back to LocalStorage.");
-    const stored = localStorage.getItem('riverRaidScores');
-    if (stored) {
-      state.current.highScores = JSON.parse(stored);
-    } else {
-      state.current.highScores = [];
-    }
-    setLoadingScores(false);
-  };
-
-  const saveHighScores = async (name: string, score: number) => {
-    setLoadingScores(true);
-    
-    // 1. Try Supabase
-    if (supabase) {
-        try {
-            console.log("Attempting to save score to Supabase...");
-            
-            // Ensure IP is fetched (retry if missing)
-            let ipAddress = userIpRef.current;
-            if (!ipAddress) {
-                console.warn("IP missing during save, forcing fetch...");
-                ipAddress = await ensureIp();
-            }
-
-            const payload: any = { 
-                name, 
-                score, 
-                ip_address: ipAddress // Might still be null if all services fail
-            };
-            
-            console.log("Saving payload:", payload);
-
-            const { error } = await supabase.from('scores').insert([payload]);
-            
-            if (error) {
-                if (error.code === '42P01' || error.message?.includes('42P01') || error.message?.includes('relation "scores" does not exist')) {
-                    console.warn("Cannot save score: Table 'scores' missing in Supabase.");
-                    setShowSqlModal(true);
-                } else {
-                    console.error("Supabase save error detail:", error.message);
-                }
-                throw error;
-            } else {
-                console.log("Score saved successfully.");
-                await loadHighScores(); // Refresh
-                setLoadingScores(false);
-                return;
-            }
-        } catch (err) {
-           // Fall through
-        }
-    }
-
-    // 2. Fallback to LocalStorage
-    console.log("Saving to LocalStorage.");
-    const s = state.current;
-    s.highScores.push({ name, score });
-    s.highScores.sort((a, b) => b.score - a.score);
-    if (s.highScores.length > MAX_LEADERBOARD_ENTRIES) {
-        s.highScores.pop();
-    }
-    localStorage.setItem('riverRaidScores', JSON.stringify(s.highScores));
-    setLoadingScores(false);
-  };
-
-  const loadGold = (): number => {
-      const stored = localStorage.getItem('riverRaidGold');
-      return stored ? parseInt(stored, 10) : 0;
-  };
-
-  const saveGold = (amount: number) => {
-      localStorage.setItem('riverRaidGold', amount.toString());
-  };
-
-  // --- Mobile Input Helpers ---
-  const handleTouchStart = (key: string) => {
-    initAudio(); // Initialize audio on first touch
-    if (state.current.gameState === GameState.LEADERBOARD_INPUT) return; 
-
-    state.current.keys[key] = true;
-    
-    if (key === 'KeyM') {
-        if (state.current.gameState === GameState.PLAYING) {
-            state.current.gameState = GameState.SHOP;
-            setUiGameState(GameState.SHOP);
-        } else if (state.current.gameState === GameState.SHOP) {
-            state.current.gameState = GameState.PLAYING;
-            setUiGameState(GameState.PLAYING);
-        }
-    }
-    
-    if (state.current.gameState === GameState.START && key === 'Space') {
-        initGame(true);
-    }
-    
-    if (state.current.gameState === GameState.GAME_OVER && key === 'KeyR') {
-        initGame(true);
-    }
-
-    if (state.current.gameState === GameState.PLAYING && key === 'Space') {
-        fireBullet();
-    }
-  };
-
-  const handleTouchEnd = (key: string) => {
-    state.current.keys[key] = false;
-  };
-
-  // Joystick Logic
-  const handleJoystickStart = (e: React.TouchEvent) => {
-    initAudio(); // Initialize audio
-    if (state.current.gameState !== GameState.PLAYING) return;
-    setIsJoystickActive(true);
-    updateJoystick(e);
-  };
-
-  const handleJoystickMove = (e: React.TouchEvent) => {
-    if (!isJoystickActive) return;
-    updateJoystick(e);
-  };
-
-  const handleJoystickEnd = () => {
-    setIsJoystickActive(false);
-    setJoystickPos({ x: 0, y: 0 });
-    state.current.keys['ArrowLeft'] = false;
-    state.current.keys['ArrowRight'] = false;
-    state.current.keys['ArrowUp'] = false;
-    state.current.keys['ArrowDown'] = false;
-  };
-
-  const updateJoystick = (e: React.TouchEvent) => {
-     if (!joystickContainerRef.current) return;
-     const touch = e.touches[0];
-     const rect = joystickContainerRef.current.getBoundingClientRect();
-     const centerX = rect.left + rect.width / 2;
-     const centerY = rect.top + rect.height / 2;
-     
-     const dx = touch.clientX - centerX;
-     const dy = touch.clientY - centerY;
-     const distance = Math.sqrt(dx*dx + dy*dy);
-     const maxRadius = rect.width / 2 - 15; // Knob radius offset
-     
-     let clampedX = dx;
-     let clampedY = dy;
-     
-     if (distance > maxRadius) {
-         const angle = Math.atan2(dy, dx);
-         clampedX = Math.cos(angle) * maxRadius;
-         clampedY = Math.sin(angle) * maxRadius;
-     }
-     
-     setJoystickPos({ x: clampedX, y: clampedY });
-
-     // Map to keys with REDUCED SENSITIVITY (Higher Deadzone)
-     const deadzone = 25; 
-     state.current.keys['ArrowLeft'] = clampedX < -deadzone;
-     state.current.keys['ArrowRight'] = clampedX > deadzone;
-     state.current.keys['ArrowUp'] = clampedY < -deadzone;
-     state.current.keys['ArrowDown'] = clampedY > deadzone;
-  };
-
-  const fireBullet = () => {
-      const s = state.current;
-      playShootSound(); // Sound Effect
-      if (s.player.weaponType === WeaponType.SPREAD) {
-        s.bullets.push(
-            { x: s.player.x + s.player.width / 2 - 2, y: s.player.y, width: 4, height: 10, vx: 0, vy: 10, isEnemy: false, markedForDeletion: false },
-            { x: s.player.x, y: s.player.y + 5, width: 4, height: 10, vx: -3, vy: 9, isEnemy: false, markedForDeletion: false },
-            { x: s.player.x + s.player.width, y: s.player.y + 5, width: 4, height: 10, vx: 3, vy: 9, isEnemy: false, markedForDeletion: false }
-        );
-    } else {
-        s.bullets.push({
-            x: s.player.x + s.player.width / 2 - 2,
-            y: s.player.y,
-            width: 4,
-            height: 10,
-            vx: 0,
-            vy: 10,
-            isEnemy: false,
-            markedForDeletion: false
-        });
-    }
-  }
-
-  // --- Game Engine Methods ---
-
-  const initGame = (fullReset: boolean = false) => {
-    initAudio(); // Ensure audio is ready
-    stopBossMusic(); // Reset music if active
-    
-    const s = state.current;
-    // We load scores asynchronously in background, don't block start
-    loadHighScores(); 
-    
-    s.player.gold = loadGold(); 
-    
-    if (fullReset) {
-      s.player.lives = 5; // Start with 5 lives on full reset
-      s.player.score = 0;
-      s.distanceCounter = 0;
-      s.gameFrameCount = 0;
-      s.difficulty = 1.0;
-      s.playerNameInput = "";
-      s.bossActive = false;
-      setInputValue("");
-    }
-
-    s.player.x = CANVAS_WIDTH / 2 - PLAYER_WIDTH / 2;
-    s.player.y = CANVAS_HEIGHT - 120;
-    s.player.fuel = MAX_FUEL;
-    s.player.vx = 0;
-    s.player.vy = 0;
-    s.player.isInvulnerable = true;
-    s.player.invulnerableTimer = 120; 
-    s.player.weaponType = WeaponType.SINGLE; 
-    
-    s.bullets = [];
-    s.enemies = [];
-    s.particles = [];
-    s.decorations = [];
-    s.keys = {};
-    s.enemySpawnTimer = 0;
-
-    s.riverSegments = [];
-    for (let y = CANVAS_HEIGHT; y > -RIVER_SEGMENT_HEIGHT * 5; y -= RIVER_SEGMENT_HEIGHT) {
-      addRiverSegment(y);
-    }
-    
-    s.gameState = GameState.PLAYING;
-    setUiGameState(GameState.PLAYING);
-  };
-
-  const addRiverSegment = (yPos: number) => {
-    const s = state.current;
-    s.distanceCounter++; 
-
-    const t = s.distanceCounter * 0.05; 
-    const difficultyNarrowing = Math.min(40, (s.difficulty - 1) * 10);
-    
-    const center = (CANVAS_WIDTH / 2) + Math.sin(t) * 100 + Math.sin(t * 0.5) * 40;
-    let width = 340 + Math.cos(t * 1.3) * 80 - difficultyNarrowing;
-    width = Math.max(220, Math.min(width, CANVAS_WIDTH - 40));
-    
-    const segmentX = Math.max(width / 2 + 20, Math.min(center, CANVAS_WIDTH - width / 2 - 20));
-
-    s.riverSegments.unshift({ 
-      y: yPos, 
-      centerX: segmentX,
-      width: width
-    });
-
-    // Decorations
-    const leftBankEnd = segmentX - width / 2;
-    if (leftBankEnd > 40 && Math.random() < 0.3) {
-        const type = Math.random() > 0.9 ? DecorationType.HOUSE : DecorationType.TREE;
-        const variant = Math.floor(Math.random() * 3); // 0, 1, or 2
-        s.decorations.push({
-            x: Math.random() * (leftBankEnd - 30),
-            y: yPos,
-            type: type,
-            variant: variant,
-            markedForDeletion: false
-        });
-    }
-
-    const rightBankStart = segmentX + width / 2;
-    if (CANVAS_WIDTH - rightBankStart > 40 && Math.random() < 0.3) {
-        const type = Math.random() > 0.9 ? DecorationType.HOUSE : DecorationType.TREE;
-        const variant = Math.floor(Math.random() * 3); // 0, 1, or 2
-        s.decorations.push({
-            x: rightBankStart + Math.random() * (CANVAS_WIDTH - rightBankStart - 30),
-            y: yPos,
-            type: type,
-            variant: variant,
-            markedForDeletion: false
-        });
-    }
-  };
-
-  const spawnBoss = () => {
-    const s = state.current;
-    // Calculate HP: Starts at 5 (at frame 3600), increases by 2 every subsequent boss
-    const difficultyStep = Math.floor(s.gameFrameCount / 1800);
-    const hp = 3 + difficultyStep;
-
-    s.bossActive = true;
-    startBossMusic(); // START TENSION MUSIC
-
-    s.enemies.push({
-        type: EnemyType.BOSS,
-        x: CANVAS_WIDTH / 2 - 40,
-        y: -100, // Start above screen
-        width: 80,
-        height: 60,
-        vx: 2,
-        vy: 1, 
-        hp: hp,
-        maxHp: hp,
-        shootTimer: 60,
-        markedForDeletion: false
-    });
-    // Announcement effect
-    createExplosion(CANVAS_WIDTH/2, 100, '#ef4444', 20);
-  };
-
-  const spawnEnemy = (riverSegment: { y: number, centerX: number, width: number }) => {
-      const s = state.current;
-      // Don't spawn normal enemies if boss is active (except powerups rarely)
-      if (s.bossActive && Math.random() > 0.1) return;
-
-      const typeRoll = Math.random();
-      let type = EnemyType.SHIP;
-      let width = 30;
-      let height = 15;
-      let speedX = 0;
-      let speedY = 0; 
-
-      if (typeRoll < 0.05) {
-          type = EnemyType.LIFE_ORB; width = 20; height = 20; speedY = 0;
-      }
-      else if (typeRoll < 0.08) {
-          type = EnemyType.WEAPON_CRATE; width = 25; height = 25; speedY = 0;
-      }
-      else if (typeRoll < 0.23) {
-          type = EnemyType.GOLD_COIN; width = 20; height = 20; speedY = 0;
-      }
-      else if (typeRoll < 0.38) {
-        type = EnemyType.FUEL_DEPOT; width = 25; height = 40; speedY = 0; 
-      } 
-      else if (typeRoll < 0.68) {
-        type = EnemyType.HELICOPTER; width = 30; height = 30;
-        speedX = (Math.random() - 0.5) * (3 * s.difficulty); 
-        speedY = 1; 
-      } 
-      else {
-        if (Math.random() > 0.7) {
-             type = EnemyType.JET; width = 25; height = 25;
-             speedX = 0; speedY = 5 * s.difficulty;
-        } else {
-             type = EnemyType.SHIP; width = 40; height = 20;
-             speedX = (Math.random() - 0.5) * (0.8 * s.difficulty); 
-             speedY = 0.5;
-        }
-      }
-
-      const minX = riverSegment.centerX - riverSegment.width / 2 + 20;
-      const maxX = riverSegment.centerX + riverSegment.width / 2 - 20 - width;
-      
-      if (maxX <= minX) return;
-
-      const x = minX + Math.random() * (maxX - minX);
-
-      s.enemies.push({
-        type,
-        x,
-        y: riverSegment.y,
-        width,
-        height,
-        vx: speedX,
-        vy: speedY, 
-        hp: 1,
-        maxHp: 1,
-        shootTimer: Math.floor(Math.random() * 60 + 60), 
-        markedForDeletion: false
-      });
-  };
-
-  // --- Market Logic ---
-  const buyItem = (itemIndex: number) => {
-      const s = state.current;
-      let cost = 0;
-      let success = false;
-
-      // Prices reduced by 50%
-      switch(itemIndex) {
-          case 1: // Refill Fuel
-              cost = 5;
-              if (s.player.gold >= cost) {
-                  s.player.fuel = MAX_FUEL;
-                  playCollectSound();
-                  success = true;
-              }
-              break;
-          case 2: // Shield (10s)
-              cost = 10;
-              if (s.player.gold >= cost) {
-                  s.player.isInvulnerable = true;
-                  s.player.invulnerableTimer = 600;
-                  playCollectSound();
-                  success = true;
-              }
-              break;
-          case 3: // Spread Gun
-              cost = 15;
-              if (s.player.gold >= cost) {
-                  s.player.weaponType = WeaponType.SPREAD;
-                  playCollectSound();
-                  success = true;
-              }
-              break;
-          case 4: // Nuke
-              cost = 25;
-              if (s.player.gold >= cost) {
-                  s.enemies.forEach(e => {
-                      if (e.type !== EnemyType.GOLD_COIN && e.type !== EnemyType.FUEL_DEPOT && e.type !== EnemyType.LIFE_ORB && e.type !== EnemyType.WEAPON_CRATE && e.type !== EnemyType.BOSS) {
-                          if (e.y > 0 && e.y < CANVAS_HEIGHT) {
-                              e.markedForDeletion = true;
-                              createExplosion(e.x + e.width/2, e.y + e.height/2, 'orange', 15);
-                              s.player.score += 50;
-                          }
-                      }
-                      if (e.type === EnemyType.BOSS) {
-                          e.hp -= 20; // Nuke damages boss
-                          createExplosion(e.x + e.width/2, e.y + e.height/2, 'orange', 30);
-                          playBossHitSound();
-                      }
-                  });
-                  s.bullets.forEach(b => b.markedForDeletion = true);
-                  createExplosion(CANVAS_WIDTH/2, CANVAS_HEIGHT/2, 'white', 100);
-                  success = true;
-              }
-              break;
-      }
-
-      if (success) {
-          s.player.gold -= cost;
-          saveGold(s.player.gold);
-      }
-  };
-
-  // --- Update Loop ---
-
-  const update = () => {
-    const s = state.current;
-    if (s.gameState !== GameState.PLAYING) {
-        // If we leave playing state (e.g. game over), stop boss music
-        if (s.gameState === GameState.GAME_OVER) stopBossMusic();
-        return;
-    }
-
-    s.gameFrameCount++;
-
-    // Time Bonus & Difficulty Increase
-    if (s.gameFrameCount % 1800 === 0 && s.gameFrameCount > 0) {
-        const difficultyStep = Math.floor(s.gameFrameCount / 1800);
-        s.difficulty = 1.0 + (difficultyStep * 0.1); 
-        
-        s.player.score += 500;
-        // Small celebration for difficulty up, but check if boss is spawning
-        if (s.gameFrameCount % BOSS_SPAWN_INTERVAL !== 0) {
-            createExplosion(CANVAS_WIDTH/2, CANVAS_HEIGHT/2, '#fbbf24', 40);
-        }
-    }
-
-    // Boss Spawn Logic
-    if (s.gameFrameCount % BOSS_SPAWN_INTERVAL === 0 && !s.bossActive) {
-        spawnBoss();
-    }
-
-    const currentScrollSpeed = BASE_SCROLL_SPEED * Math.min(2.0, s.difficulty);
-
-    // 1. Player Controls
-    // Reduced speed from 5 to 3.5
-    const playerSpeed = 3.5 * Math.min(1.5, s.difficulty);
-    if (s.keys['ArrowLeft']) s.player.vx = -playerSpeed;
-    else if (s.keys['ArrowRight']) s.player.vx = playerSpeed;
-    else s.player.vx = 0;
-
-    if (s.keys['ArrowUp']) s.player.vy = -playerSpeed; 
-    else if (s.keys['ArrowDown']) s.player.vy = playerSpeed; 
-    else s.player.vy = 0;
-
-    s.player.x += s.player.vx;
-    s.player.y += s.player.vy;
-
-    if (s.player.y < 0) s.player.y = 0;
-    if (s.player.y > CANVAS_HEIGHT - s.player.height) s.player.y = CANVAS_HEIGHT - s.player.height;
-
-    s.player.fuel -= FUEL_CONSUMPTION_RATE;
-    if (s.player.fuel <= 0) {
-      handleDeath("OUT OF FUEL");
-      return;
-    }
-
-    if (s.player.isInvulnerable) {
-      s.player.invulnerableTimer--;
-      if (s.player.invulnerableTimer <= 0) s.player.isInvulnerable = false;
-    }
-
-    // 2. Map Scrolling & Decorations
-    for (let i = 0; i < s.riverSegments.length; i++) {
-      s.riverSegments[i].y += currentScrollSpeed;
-    }
-    if (s.riverSegments.length > 0 && s.riverSegments[s.riverSegments.length - 1].y > CANVAS_HEIGHT) {
-      s.riverSegments.pop();
-    }
-
-    for (let i = 0; i < s.decorations.length; i++) {
-        s.decorations[i].y += currentScrollSpeed;
-        if (s.decorations[i].y > CANVAS_HEIGHT) {
-            s.decorations[i].markedForDeletion = true;
-        }
-    }
-    s.decorations = s.decorations.filter(d => !d.markedForDeletion);
-
-
-    const topSegment = s.riverSegments[0];
-    if (topSegment && topSegment.y > -RIVER_SEGMENT_HEIGHT) {
-      addRiverSegment(topSegment.y - RIVER_SEGMENT_HEIGHT);
-      
-      s.enemySpawnTimer++;
-      const spawnThreshold = Math.max(2, 5 - (s.difficulty * 0.5));
-      if (s.enemySpawnTimer > spawnThreshold) { 
-        if (Math.random() < Math.min(0.8, 0.3 * s.difficulty)) {
-            spawnEnemy(s.riverSegments[0]);
-        }
-        s.enemySpawnTimer = 0;
-      }
-    }
-
-    // 3. Update Entities
-    s.enemies.forEach(enemy => {
-      
-      if (enemy.type === EnemyType.BOSS) {
-          // Boss Logic:
-          // Stay near top of screen (y = 80-120), oscillate X
-          if (enemy.y < 80) enemy.y += 2; // Fly in
-          else enemy.y = 80 + Math.sin(s.gameFrameCount / 50) * 20;
-
-          // Move X
-          enemy.x += enemy.vx;
-          if (enemy.x <= 20 || enemy.x + enemy.width >= CANVAS_WIDTH - 20) {
-              enemy.vx *= -1;
-          }
-
-          // Boss Shooting
-          enemy.shootTimer--;
-          if (enemy.shootTimer <= 0) {
-             const bulletSpeed = 5 + s.difficulty;
-             // Spread shot
-             s.bullets.push(
-                { x: enemy.x + enemy.width / 2, y: enemy.y + enemy.height, width: 8, height: 12, vx: 0, vy: -bulletSpeed, isEnemy: true, markedForDeletion: false },
-                { x: enemy.x + enemy.width / 2, y: enemy.y + enemy.height, width: 8, height: 12, vx: -2, vy: -bulletSpeed * 0.9, isEnemy: true, markedForDeletion: false },
-                { x: enemy.x + enemy.width / 2, y: enemy.y + enemy.height, width: 8, height: 12, vx: 2, vy: -bulletSpeed * 0.9, isEnemy: true, markedForDeletion: false }
-             );
-             enemy.shootTimer = Math.max(60, 100 - (s.difficulty * 10)); // Fires faster as difficulty goes up
-          }
-      } else {
-        // Standard Enemy Movement
-        enemy.y += currentScrollSpeed + (enemy.vy || 0);
-        enemy.x += enemy.vx;
-
-        if (enemy.type === EnemyType.HELICOPTER) {
-           if (enemy.x <= 50 || enemy.x + enemy.width >= CANVAS_WIDTH - 50) enemy.vx *= -1;
-        }
-
-        // Standard Shooting Logic
-        if (s.gameFrameCount > SHOOTING_START_FRAME) {
-            if (enemy.y > 0 && enemy.y < CANVAS_HEIGHT - 100) { 
-               if (enemy.type === EnemyType.SHIP || enemy.type === EnemyType.HELICOPTER || enemy.type === EnemyType.JET) {
-                   enemy.shootTimer--;
-                   if (enemy.shootTimer <= 0) {
-                       const bulletSpeed = 4 + s.difficulty;
-                       s.bullets.push({
-                           x: enemy.x + enemy.width / 2 - 3,
-                           y: enemy.y + enemy.height,
-                           width: 6,
-                           height: 6,
-                           vx: 0,
-                           vy: -bulletSpeed, 
-                           isEnemy: true,
-                           markedForDeletion: false
-                       });
-                       enemy.shootTimer = Math.max(30, 120 - (s.difficulty * 20));
-                   }
-               }
-            }
-        }
-      }
-      
-      if (enemy.y > CANVAS_HEIGHT) enemy.markedForDeletion = true;
-    });
-    
-    // Check if boss was deleted
-    if (s.bossActive && !s.enemies.some(e => e.type === EnemyType.BOSS)) {
-        s.bossActive = false;
-        stopBossMusic(); // STOP BOSS MUSIC
-    }
-    
-    s.enemies = s.enemies.filter(e => !e.markedForDeletion);
-
-    // Bullets Movement
-    s.bullets.forEach(bullet => {
-      bullet.y -= bullet.vy; 
-      bullet.x += bullet.vx || 0; 
-      
-      if (bullet.isEnemy) {
-          if (bullet.y > CANVAS_HEIGHT) bullet.markedForDeletion = true;
-      } else {
-          if (bullet.y < 0 || bullet.x < 0 || bullet.x > CANVAS_WIDTH) bullet.markedForDeletion = true;
-      }
-    });
-
-    // Bullet Neutralization
-    for (let i = 0; i < s.bullets.length; i++) {
-        const b1 = s.bullets[i];
-        if (b1.markedForDeletion) continue;
-
-        for (let j = i + 1; j < s.bullets.length; j++) {
-            const b2 = s.bullets[j];
-            if (b2.markedForDeletion) continue;
-
-            if (b1.isEnemy !== b2.isEnemy) {
-                if (checkCollision(b1, b2)) {
-                    b1.markedForDeletion = true;
-                    b2.markedForDeletion = true;
-                    createExplosion((b1.x + b2.x) / 2, (b1.y + b2.y) / 2, '#9ca3af', 6);
-                }
-            }
-        }
-    }
-
-    s.bullets = s.bullets.filter(b => !b.markedForDeletion);
-
-    // Particles
-    s.particles.forEach(p => {
-      p.x += p.vx;
-      p.y += p.vy + currentScrollSpeed;
-      p.life--;
-      if (p.life <= 0) p.markedForDeletion = true;
-    });
-    s.particles = s.particles.filter(p => !p.markedForDeletion);
-
-
-    // 4. Collision Detection
-
-    // River Banks
-    const playerSegment = s.riverSegments.find(seg => 
-      s.player.y + s.player.height/2 >= seg.y && s.player.y + s.player.height/2 < seg.y + RIVER_SEGMENT_HEIGHT
-    );
-
-    if (playerSegment && !s.player.isInvulnerable) {
-      const bankLeft = playerSegment.centerX - playerSegment.width / 2;
-      const bankRight = playerSegment.centerX + playerSegment.width / 2;
-
-      if (s.player.x < bankLeft || s.player.x + s.player.width > bankRight) {
-        handleDeath("CRASHED INTO LAND");
-        return;
-      }
-    }
-
-    s.enemies.forEach(enemy => {
-      if (checkCollision(s.player, enemy)) {
-        if (enemy.type === EnemyType.FUEL_DEPOT) {
-           s.player.fuel = Math.min(s.player.fuel + FUEL_REFILL_RATE * 30, MAX_FUEL);
-           playCollectSound();
-           enemy.markedForDeletion = true;
-        } else if (enemy.type === EnemyType.GOLD_COIN) {
-           s.player.gold++;
-           s.player.score += 50;
-           saveGold(s.player.gold);
-           playCollectSound();
-           enemy.markedForDeletion = true;
-        } else if (enemy.type === EnemyType.LIFE_ORB) {
-           s.player.lives++;
-           s.player.score += 100;
-           playCollectSound();
-           createExplosion(enemy.x + enemy.width/2, enemy.y + enemy.height/2, '#ec4899', 20);
-           enemy.markedForDeletion = true;
-        } else if (enemy.type === EnemyType.WEAPON_CRATE) {
-           s.player.weaponType = WeaponType.SPREAD;
-           s.player.score += 100;
-           playCollectSound();
-           createExplosion(enemy.x + enemy.width/2, enemy.y + enemy.height/2, '#06b6d4', 20);
-           enemy.markedForDeletion = true;
-        } else if (enemy.type !== EnemyType.BRIDGE) {
-           // Boss crash collision
-           if (enemy.type === EnemyType.BOSS) {
-               if (!s.player.isInvulnerable) handleDeath("CRASHED INTO BOSS");
-           } else {
-               createExplosion(enemy.x + enemy.width/2, enemy.y + enemy.height/2);
-               enemy.markedForDeletion = true;
-               if (!s.player.isInvulnerable) handleDeath("CRASHED INTO ENEMY");
-           }
-        }
-      }
-    });
-
-    s.bullets.forEach(bullet => {
-      if (bullet.markedForDeletion) return;
-
-      if (bullet.isEnemy) {
-          if (!s.player.isInvulnerable && checkCollision(bullet, s.player)) {
-             bullet.markedForDeletion = true;
-             handleDeath("SHOT BY ENEMY");
-          }
-      } else {
-          s.enemies.forEach(enemy => {
-            if (!bullet.markedForDeletion && !enemy.markedForDeletion && checkCollision(bullet, enemy)) {
-              if (enemy.type === EnemyType.FUEL_DEPOT) {
-                 bullet.markedForDeletion = true;
-                 enemy.markedForDeletion = true;
-                 createExplosion(enemy.x, enemy.y, 'orange');
-                 playHitSound(); // Sound on Hit
-                 s.player.score += 150; 
-              } else if (enemy.type === EnemyType.LIFE_ORB || enemy.type === EnemyType.WEAPON_CRATE || enemy.type === EnemyType.GOLD_COIN) {
-                 bullet.markedForDeletion = true;
-                 enemy.markedForDeletion = true;
-                 createExplosion(enemy.x, enemy.y, 'white');
-                 s.player.score += 10; 
-              } else if (enemy.type === EnemyType.BOSS) {
-                 // Boss Damage Logic
-                 bullet.markedForDeletion = true;
-                 enemy.hp--;
-                 playBossHitSound();
-                 // Small sparkle on hit
-                 createExplosion(bullet.x, bullet.y, '#fff', 2);
-                 if (enemy.hp <= 0) {
-                     enemy.markedForDeletion = true;
-                     createExplosion(enemy.x + enemy.width/2, enemy.y + enemy.height/2, '#facc15', 100);
-                     playExplosionSound();
-                     s.player.score += 5000;
-                     s.player.gold += 50; // Big money reward
-                     s.bossActive = false;
-                     stopBossMusic(); // STOP MUSIC
-                 }
-              } else {
-                 bullet.markedForDeletion = true;
-                 enemy.markedForDeletion = true;
-                 playHitSound(); // Sound on Hit
-                 createExplosion(enemy.x, enemy.y);
-                 s.player.score += 100;
-              }
-            }
-          });
-      }
-    });
-  };
-
-  const handleDeath = (reason: string) => {
-    const s = state.current;
-    stopBossMusic(); // Stop boss music on death
-    createExplosion(s.player.x, s.player.y, 'red', 50);
-    playExplosionSound(); // Boom!
-    s.player.lives--;
-    if (s.player.lives > 0) {
-      s.player.x = CANVAS_WIDTH / 2 - PLAYER_WIDTH / 2;
-      s.player.y = CANVAS_HEIGHT - 120;
-      s.player.vx = 0;
-      s.player.vy = 0;
-      s.player.isInvulnerable = true;
-      s.player.invulnerableTimer = 120;
-      s.player.fuel = MAX_FUEL;
-      s.player.weaponType = WeaponType.SINGLE;
-      // Clear bullets but maybe keep enemies
-      s.bullets = []; 
-    } else {
-      checkHighScore();
-    }
-  };
-
-  const checkHighScore = async () => {
-    const s = state.current;
-    
-    // If online, we need to know the lowest score on the board properly
-    // but to avoid network delay on death, we just assume they might have made it
-    // if their score is reasonably high or the list is empty.
-    // Simpler: Just show input if score > 0
-    if (s.player.score > 0) {
-        // We will validate against real data when they submit or we load the screen
-        await loadHighScores(); // Refresh latest
-        const lowest = s.highScores.length < MAX_LEADERBOARD_ENTRIES ? 0 : s.highScores[s.highScores.length-1].score;
-        
-        if (s.player.score > lowest || s.highScores.length < MAX_LEADERBOARD_ENTRIES) {
-            s.gameState = GameState.LEADERBOARD_INPUT;
-            setUiGameState(GameState.LEADERBOARD_INPUT);
-            s.playerNameInput = "";
-            setInputValue("");
-        } else {
-            s.gameState = GameState.GAME_OVER;
-            setUiGameState(GameState.GAME_OVER);
-        }
-    } else {
-        s.gameState = GameState.GAME_OVER;
-        setUiGameState(GameState.GAME_OVER);
-    }
-  };
-
-  const submitHighScore = async (name: string) => {
-      if (loadingScores) return; // Guard against multiple submissions
-      const s = state.current;
-      const finalName = name.trim().toUpperCase() || "UNK";
-      
-      await saveHighScores(finalName, s.player.score);
-
-      s.gameState = GameState.GAME_OVER;
-      setUiGameState(GameState.GAME_OVER);
-  };
-
-  const createExplosion = (x: number, y: number, color: string = 'white', count: number = 10) => {
-     if (count > 20) playExplosionSound(); // Play sound for big explosions
-     for(let i=0; i<count; i++) {
-       state.current.particles.push({
-         x, 
-         y,
-         vx: (Math.random() - 0.5) * 10,
-         vy: (Math.random() - 0.5) * 10,
-         life: 20 + Math.random() * 20,
-         color: color,
-         size: Math.random() * 4 + 2,
-         width: 0, height: 0, markedForDeletion: false
-       });
-     }
-  };
-
-  const checkCollision = (r1: {x:number, y:number, width:number, height:number}, r2: {x:number, y:number, width:number, height:number}) => {
-    return (
-      r1.x < r2.x + r2.width &&
-      r1.x + r1.width > r2.x &&
-      r1.y < r2.y + r2.height &&
-      r1.y + r1.height > r2.y
-    );
-  };
-
-  // --- Rendering ---
-
-  const draw = (ctx: CanvasRenderingContext2D) => {
-    const s = state.current;
-
-    // Background
-    ctx.fillStyle = '#2d5a27';
-    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-
-    // River
-    ctx.fillStyle = '#3b82f6';
-    ctx.beginPath();
-    if (s.riverSegments.length > 0) {
-      const sortedSegments = [...s.riverSegments].sort((a, b) => a.y - b.y);
-      if (sortedSegments.length > 0) {
-          const top = sortedSegments[0];
-          ctx.moveTo(top.centerX - top.width/2, top.y);
-          for (let seg of sortedSegments) ctx.lineTo(seg.centerX - seg.width/2, seg.y);
-          const last = sortedSegments[sortedSegments.length-1];
-          ctx.lineTo(last.centerX - last.width/2, last.y + RIVER_SEGMENT_HEIGHT);
-          ctx.lineTo(last.centerX + last.width/2, last.y + RIVER_SEGMENT_HEIGHT);
-          for (let i = sortedSegments.length - 1; i >= 0; i--) {
-              const seg = sortedSegments[i];
-              ctx.lineTo(seg.centerX + seg.width/2, seg.y);
-          }
-          ctx.lineTo(top.centerX + top.width/2, top.y);
-      }
-    }
-    ctx.closePath();
-    ctx.fill();
-
-    // Decorations
-    s.decorations.forEach(d => {
-        if (d.type === DecorationType.TREE) {
-            ctx.fillStyle = '#064e3b'; // Dark Green
-            if (d.variant === 1) ctx.fillStyle = '#166534'; // Lighter Green for Oak
-            if (d.variant === 2) ctx.fillStyle = '#0f3925'; // Very Dark for Pine
-
-            if (d.variant === 1) {
-                // Round Tree (Oak)
-                ctx.beginPath();
-                ctx.arc(d.x + 10, d.y + 10, 12, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.fillStyle = '#3f2c22'; // Trunk
-                ctx.fillRect(d.x + 8, d.y + 20, 4, 8);
-            } else if (d.variant === 2) {
-                // Tall Skinny Pine
-                ctx.beginPath();
-                ctx.moveTo(d.x + 10, d.y - 10);
-                ctx.lineTo(d.x + 18, d.y + 25);
-                ctx.lineTo(d.x + 2, d.y + 25);
-                ctx.fill();
-            } else {
-                // Standard Tree
-                ctx.beginPath();
-                ctx.moveTo(d.x + 10, d.y);
-                ctx.lineTo(d.x + 20, d.y + 25);
-                ctx.lineTo(d.x, d.y + 25);
-                ctx.fill();
-            }
-        } else if (d.type === DecorationType.HOUSE) {
-            const variant = d.variant || 0;
-            
-            // House Body
-            if (variant === 1) ctx.fillStyle = '#e2e8f0'; // White
-            else if (variant === 2) ctx.fillStyle = '#78716c'; // Stone/Grey
-            else ctx.fillStyle = '#f8fafc'; // Default White
-            
-            ctx.fillRect(d.x, d.y + 10, 20, 15);
-            
-            // House Roof
-            if (variant === 1) ctx.fillStyle = '#0ea5e9'; // Blue Roof
-            else if (variant === 2) ctx.fillStyle = '#44403c'; // Dark Grey Roof
-            else ctx.fillStyle = '#b91c1c'; // Red Roof
-
-            ctx.beginPath();
-            if (variant === 2) {
-                // Flat/Slant Roof
-                ctx.moveTo(d.x - 2, d.y + 5);
-                ctx.lineTo(d.x + 22, d.y + 10);
-                ctx.lineTo(d.x + 22, d.y + 2);
-                ctx.lineTo(d.x - 2, d.y + 2);
-            } else {
-                // Triangle Roof
-                ctx.moveTo(d.x + 10, d.y);
-                ctx.lineTo(d.x + 24, d.y + 10);
-                ctx.lineTo(d.x - 4, d.y + 10);
-            }
-            ctx.fill();
-            
-            // Door
-            ctx.fillStyle = '#475569';
-            ctx.fillRect(d.x + 8, d.y + 18, 4, 7);
-        }
-    });
-
-    // Dynamic Enemy Colors based on Difficulty
-    const getLevelIndex = () => Math.floor(s.difficulty - 1);
-    
-    // Entities
-    s.enemies.forEach(e => {
-      const lvl = getLevelIndex();
-
-      if (e.type === EnemyType.SHIP) {
-        const shipColors = ['#1e293b', '#7f1d1d', '#000000', '#312e81']; // Slate, Red, Black, Indigo
-        const shipMain = shipColors[lvl % shipColors.length] || '#1e293b';
-        
-        ctx.fillStyle = shipMain;
-        ctx.fillRect(e.x, e.y, e.width, e.height);
-        ctx.fillStyle = '#64748b';
-        ctx.fillRect(e.x + 5, e.y - 5, 10, 5);
-      } else if (e.type === EnemyType.HELICOPTER) {
-        const heliColors = ['#be123c', '#15803d', '#1d4ed8', '#a21caf']; // Red, Green, Blue, Magenta
-        const heliMain = heliColors[lvl % heliColors.length] || '#be123c';
-
-        ctx.fillStyle = heliMain;
-        ctx.fillRect(e.x, e.y, e.width, e.height);
-        ctx.fillStyle = '#000';
-        ctx.fillRect(e.x - 5, e.y, e.width + 10, 2);
-        if (Math.floor(Date.now()/50)%2===0) {
-            ctx.fillRect(e.x - 10, e.y - 5, e.width + 20, 2);
-        } else {
-            ctx.fillRect(e.x, e.y - 5, e.width, 2);
-        }
-      } else if (e.type === EnemyType.JET) {
-        const jetColors = ['#7c3aed', '#c2410c', '#0ea5e9', '#4d7c0f']; // Purple, Orange, Sky, Green
-        const jetMain = jetColors[lvl % jetColors.length] || '#7c3aed';
-
-        ctx.fillStyle = jetMain;
-        ctx.beginPath();
-        ctx.moveTo(e.x, e.y); ctx.lineTo(e.x + e.width, e.y); ctx.lineTo(e.x + e.width/2, e.y + e.height);
-        ctx.fill();
-      } else if (e.type === EnemyType.BOSS) {
-        // Draw BOSS
-        ctx.fillStyle = '#1e1b4b'; // Dark Indigo
-        ctx.beginPath();
-        // Big Wings
-        ctx.moveTo(e.x, e.y + 20);
-        ctx.lineTo(e.x + e.width, e.y + 20);
-        ctx.lineTo(e.x + e.width/2, e.y + e.height);
-        ctx.fill();
-        // Body
-        ctx.fillStyle = '#4c1d95';
-        ctx.fillRect(e.x + e.width/2 - 15, e.y, 30, e.height - 10);
-        // Cockpit
-        ctx.fillStyle = '#facc15';
-        ctx.fillRect(e.x + e.width/2 - 5, e.y + 40, 10, 10);
-
-        // HP Bar
-        const hpPct = Math.max(0, e.hp / e.maxHp);
-        ctx.fillStyle = 'red';
-        ctx.fillRect(e.x, e.y - 10, e.width, 5);
-        ctx.fillStyle = '#22c55e';
-        ctx.fillRect(e.x, e.y - 10, e.width * hpPct, 5);
-
-      } else if (e.type === EnemyType.FUEL_DEPOT) {
-        ctx.fillStyle = '#ea580c';
-        ctx.fillRect(e.x, e.y, e.width, e.height);
-        ctx.fillStyle = '#fff';
-        ctx.font = '10px sans-serif';
-        ctx.fillText("FUEL", e.x, e.y + 12);
-      } else if (e.type === EnemyType.WEAPON_CRATE) {
-        ctx.fillStyle = '#06b6d4';
-        ctx.fillRect(e.x, e.y, e.width, e.height);
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(e.x, e.y, e.width, e.height);
-        ctx.fillStyle = '#fff';
-        ctx.font = '16px sans-serif';
-        ctx.fillText("W", e.x + 5, e.y + 18);
-      } else if (e.type === EnemyType.LIFE_ORB) {
-        ctx.fillStyle = '#ec4899';
-        ctx.beginPath();
-        ctx.arc(e.x + e.width/2, e.y + e.height/2, e.width/2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#fff';
-        ctx.font = '12px sans-serif';
-        ctx.fillText("♥", e.x + 5, e.y + 15);
-      } else if (e.type === EnemyType.GOLD_COIN) {
-        ctx.fillStyle = '#facc15'; 
-        ctx.beginPath();
-        ctx.arc(e.x + e.width/2, e.y + e.height/2, e.width/2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = '#b45309';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.fillStyle = '#b45309';
-        ctx.font = '12px sans-serif';
-        ctx.fillText("$", e.x + 6, e.y + 14);
-      } else if (e.type === EnemyType.BRIDGE) {
-        ctx.fillStyle = '#57534e';
-        ctx.fillRect(e.x, e.y, e.width, e.height);
-        ctx.strokeStyle = '#292524';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(e.x, e.y, e.width, e.height);
-        ctx.fillStyle = '#facc15';
-        for(let i=0; i<e.width; i+=40) ctx.fillRect(e.x + i, e.y + 13, 20, 4);
-      }
-    });
-
-    // Player
-    if (!s.player.isInvulnerable || Math.floor(Date.now() / 100) % 2 === 0) {
-        // Change color every minute (approx 3600 frames at 60fps)
-        const planeColors = [
-            '#fbbf24', // Amber (Default)
-            '#ffffff', // White (Visible on river)
-            '#ef4444', // Red
-            '#4ade80', // Bright Green
-            '#a855f7', // Purple
-            '#ec4899', // Pink
-            '#22d3ee', // Cyan
-            '#f97316', // Orange
-        ];
-        const colorIndex = Math.floor(s.gameFrameCount / 3600) % planeColors.length;
-        ctx.fillStyle = planeColors[colorIndex];
-
-        ctx.beginPath();
-        ctx.moveTo(s.player.x + s.player.width/2, s.player.y);
-        ctx.lineTo(s.player.x + s.player.width, s.player.y + s.player.height);
-        ctx.lineTo(s.player.x + s.player.width/2, s.player.y + s.player.height - 10);
-        ctx.lineTo(s.player.x, s.player.y + s.player.height);
-        ctx.closePath();
-        ctx.fill();
-        
-        if (s.keys['ArrowUp']) {
-             ctx.fillStyle = `rgba(255, 150, 0, ${Math.random()})`;
-             ctx.beginPath();
-             ctx.moveTo(s.player.x + s.player.width/2 - 5, s.player.y + s.player.height - 5);
-             ctx.lineTo(s.player.x + s.player.width/2 + 5, s.player.y + s.player.height - 5);
-             ctx.lineTo(s.player.x + s.player.width/2, s.player.y + s.player.height + 25);
-             ctx.fill();
-        }
-    }
-
-    // Bullets
-    s.bullets.forEach(b => {
-      if (b.isEnemy) {
-          ctx.fillStyle = '#f97316'; 
-          ctx.fillRect(b.x, b.y, b.width, b.height);
-      } else {
-          ctx.fillStyle = '#fff';
-          ctx.fillRect(b.x, b.y, b.width, b.height);
-      }
-    });
-
-    // Particles
-    s.particles.forEach(p => {
-      ctx.fillStyle = p.color;
-      ctx.fillRect(p.x, p.y, p.size, p.size);
-    });
-
-    // UI - Fuel Bar (Moved to Top)
-    const barWidth = CANVAS_WIDTH - 40;
-    const barHeight = 10;
-    const barX = 20;
-    const barY = 10; // Very Top
-    
-    ctx.fillStyle = '#333';
-    ctx.fillRect(barX, barY, barWidth, barHeight);
-    ctx.strokeStyle = '#fff';
-    ctx.strokeRect(barX, barY, barWidth, barHeight);
-    
-    const fuelPct = Math.max(0, s.player.fuel / MAX_FUEL);
-    ctx.fillStyle = fuelPct < 0.2 ? '#ef4444' : '#22c55e';
-    ctx.fillRect(barX + 2, barY + 2, (barWidth - 4) * fuelPct, barHeight - 4);
-    
-    ctx.fillStyle = '#fff';
-    ctx.font = '8px "Press Start 2P"';
-    ctx.textAlign = 'center';
-    ctx.fillText("FUEL", CANVAS_WIDTH/2, barY + 8);
-    ctx.textAlign = 'left';
-
-    // UI - Stats (Below Fuel Bar)
-    ctx.fillStyle = '#fff';
-    ctx.font = '12px "Press Start 2P"';
-    ctx.fillText(`SCORE:${s.player.score}`, 20, 40);
-    ctx.textAlign = 'right';
-    ctx.fillText(`LIVES:${s.player.lives}`, CANVAS_WIDTH - 20, 40);
-    ctx.textAlign = 'left';
-    
-    ctx.fillStyle = '#facc15';
-    ctx.fillText(`GOLD:${s.player.gold}`, 20, 60);
-    ctx.fillStyle = '#94a3b8';
-    ctx.textAlign = 'right';
-    ctx.fillText(`LVL:${s.difficulty.toFixed(1)}`, CANVAS_WIDTH - 20, 60);
-    ctx.textAlign = 'left';
-
-    // BOSS WARNING
-    if (s.bossActive) {
-        ctx.fillStyle = `rgba(255, 0, 0, ${0.5 + Math.sin(Date.now() / 100) * 0.5})`;
-        ctx.font = '20px "Press Start 2P"';
-        ctx.textAlign = 'center';
-        ctx.fillText("BOSS BATTLE!", CANVAS_WIDTH/2, 100);
-        ctx.textAlign = 'left';
-    }
-
-    // --- Screens ---
-    if (s.gameState === GameState.SHOP) {
-        ctx.fillStyle = 'rgba(0,0,0,0.85)';
-        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-        ctx.strokeStyle = '#facc15';
-        ctx.lineWidth = 4;
-        ctx.strokeRect(50, 100, CANVAS_WIDTH - 100, CANVAS_HEIGHT - 200);
-        ctx.fillStyle = '#facc15';
-        ctx.font = '30px "Press Start 2P"';
-        ctx.textAlign = 'center';
-        ctx.fillText("MARKET", CANVAS_WIDTH/2, 160);
-        ctx.font = '14px "Press Start 2P"';
-        ctx.fillStyle = '#fff';
-        ctx.fillText(`YOUR GOLD: ${s.player.gold}`, CANVAS_WIDTH/2, 200);
-        const items = [
-            { key: '1', name: 'FULL FUEL', cost: 5 },
-            { key: '2', name: 'SHIELD (10s)', cost: 10 },
-            { key: '3', name: 'SPREAD GUN', cost: 15 },
-            { key: '4', name: 'NUKE BOMB', cost: 25 },
-        ];
-        let yPos = 280;
-        items.forEach(item => {
-            ctx.textAlign = 'left';
-            ctx.fillStyle = s.player.gold >= item.cost ? '#4ade80' : '#9ca3af';
-            ctx.fillText(`[${item.key}] ${item.name}`, 80, yPos);
-            ctx.textAlign = 'right';
-            ctx.fillText(`${item.cost} G`, CANVAS_WIDTH - 80, yPos);
-            yPos += 60;
-        });
-        ctx.textAlign = 'center';
-        ctx.fillStyle = '#fbbf24';
-        ctx.font = '12px "Press Start 2P"';
-        ctx.fillText("PRESS 'M' TO RESUME", CANVAS_WIDTH/2, CANVAS_HEIGHT - 140);
-        ctx.textAlign = 'left';
-    }
-    else if (s.gameState === GameState.GAME_OVER) {
-      ctx.fillStyle = 'rgba(0,0,0,0.85)';
-      ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-      ctx.textAlign = 'center';
-      
-      ctx.fillStyle = '#ef4444';
-      ctx.font = '40px "Press Start 2P"';
-      ctx.fillText("GAME OVER", CANVAS_WIDTH/2, 150);
-      ctx.fillStyle = '#fff';
-      ctx.font = '20px "Press Start 2P"';
-      ctx.fillText(`FINAL SCORE: ${s.player.score}`, CANVAS_WIDTH/2, 200);
-      
-      // Connection Status Indicator
-      if (supabase) {
-          ctx.fillStyle = '#22c55e'; // Green
-          ctx.font = '10px "Press Start 2P"';
-          ctx.fillText("GLOBAL RANKING (ONLINE)", CANVAS_WIDTH/2, 260);
-      } else {
-          ctx.fillStyle = '#f59e0b'; // Amber
-          ctx.font = '10px "Press Start 2P"';
-          ctx.fillText("LOCAL RANKING (OFFLINE)", CANVAS_WIDTH/2, 260);
-      }
-
-      ctx.fillStyle = '#facc15';
-      ctx.font = '20px "Press Start 2P"';
-      ctx.fillText("TOP SCORES", CANVAS_WIDTH/2, 290);
-      
-      if (loadingScores) {
-          ctx.fillStyle = '#6b7280';
-          ctx.font = '12px "Press Start 2P"';
-          ctx.fillText("LOADING SCORES...", CANVAS_WIDTH/2, 330);
-      } else {
-          ctx.font = '16px "Press Start 2P"';
-          ctx.fillStyle = '#fff';
-          let yOff = 330;
-          s.highScores.forEach((entry, idx) => {
-              ctx.textAlign = 'left';
-              ctx.fillText(`${idx+1}. ${entry.name}`, CANVAS_WIDTH/2 - 120, yOff);
-              ctx.textAlign = 'right';
-              ctx.fillText(`${entry.score}`, CANVAS_WIDTH/2 + 120, yOff);
-              yOff += 30;
-          });
-      }
-      ctx.textAlign = 'center';
-      ctx.fillStyle = '#fbbf24'; 
-      ctx.font = '15px "Press Start 2P"';
-      ctx.fillText("PRESS 'R' TO RESTART", CANVAS_WIDTH/2, CANVAS_HEIGHT - 100);
-      
-      ctx.textAlign = 'left';
-    } 
-    // Draw Leaderboard Input Background (But text is handled by HTML overlay now)
-    else if (s.gameState === GameState.LEADERBOARD_INPUT) {
-        ctx.fillStyle = 'rgba(0,0,0,0.9)';
-        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-        ctx.textAlign = 'center';
-        ctx.fillStyle = '#facc15';
-        ctx.font = '30px "Press Start 2P"';
-        ctx.fillText("NEW HIGH SCORE!", CANVAS_WIDTH/2, 200);
-    }
-    else if (s.gameState === GameState.START) {
-      ctx.fillStyle = 'rgba(0,0,0,0.7)';
-      ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-      ctx.fillStyle = '#fbbf24';
-      ctx.font = '20px "Press Start 2P"';
-      ctx.textAlign = 'center';
-      ctx.fillText("PRESS SPACE TO START", CANVAS_WIDTH/2, CANVAS_HEIGHT/2);
-      ctx.font = '12px "Press Start 2P"';
-      ctx.fillStyle = '#fff';
-      ctx.fillText("COLLECT GOLD [$], PRESS [M] FOR MARKET", CANVAS_WIDTH/2, CANVAS_HEIGHT/2 + 35);
-      ctx.fillText("BUY SHIELDS, GUNS AND BOMBS!", CANVAS_WIDTH/2, CANVAS_HEIGHT/2 + 60);
-      ctx.textAlign = 'left';
-    }
-  };
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      initAudio(); // Initialize audio on key press
-      const s = state.current;
-      // Disable game key input when typing name
-      if (s.gameState === GameState.LEADERBOARD_INPUT) {
-          // Handled by HTML input
-          return;
-      }
-
-      s.keys[e.code] = true;
-      
-      if (s.gameState === GameState.START && e.code === 'Space') {
-        initGame(true);
-      }
-      else if (s.gameState === GameState.GAME_OVER && e.code === 'KeyR') {
-        initGame(true);
-      }
-      else if (e.code === 'KeyM') {
-          if (s.gameState === GameState.PLAYING) {
-              s.gameState = GameState.SHOP;
-              setUiGameState(GameState.SHOP);
-          } else if (s.gameState === GameState.SHOP) {
-              s.gameState = GameState.PLAYING;
-              setUiGameState(GameState.PLAYING);
-          }
-      }
-      else if (s.gameState === GameState.SHOP) {
-          if (e.key === '1') buyItem(1);
-          if (e.key === '2') buyItem(2);
-          if (e.key === '3') buyItem(3);
-          if (e.key === '4') buyItem(4);
-      }
-      else if (s.gameState === GameState.PLAYING && e.code === 'Space') {
-        fireBullet();
-      }
+  // --- IP Fetching Logic (Robust) ---
+  const fetchIpAddress = async () => {
+    // Helper for timeout
+    const fetchWithTimeout = (url: string, options = {}, timeout = 2000) => {
+      return Promise.race([
+        fetch(url, options),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeout))
+      ]);
     };
 
+    // Method 1: Cloudflare Trace (Text - Very reliable, rarely blocked)
+    try {
+      const resp = await fetchWithTimeout('https://www.cloudflare.com/cdn-cgi/trace') as Response;
+      if (resp.ok) {
+        const text = await resp.text();
+        const lines = text.split('\n');
+        const ipLine = lines.find(l => l.startsWith('ip='));
+        if (ipLine) {
+          const ip = ipLine.split('=')[1];
+          console.log("IP found via Cloudflare:", ip);
+          userIpRef.current = ip;
+          setDebugIpDisplay(`Client: ${ip}`);
+          return ip;
+        }
+      }
+    } catch (e) { console.warn("Cloudflare IP fetch failed", e); }
+
+    // Method 2: AWS CheckIP (Text - Very reliable)
+    try {
+      const resp = await fetchWithTimeout('https://checkip.amazonaws.com/') as Response;
+      if (resp.ok) {
+        const text = await resp.text();
+        const ip = text.trim();
+        console.log("IP found via AWS:", ip);
+        userIpRef.current = ip;
+        setDebugIpDisplay(`Client: ${ip}`);
+        return ip;
+      }
+    } catch (e) { console.warn("AWS IP fetch failed", e); }
+
+    // Method 3: Ipify (JSON - Good fallback)
+    try {
+      const resp = await fetchWithTimeout('https://api.ipify.org?format=json') as Response;
+      if (resp.ok) {
+        const data: any = await resp.json();
+        console.log("IP found via Ipify:", data.ip);
+        userIpRef.current = data.ip;
+        setDebugIpDisplay(`Client: ${data.ip}`);
+        return data.ip;
+      }
+    } catch (e) { console.warn("Ipify failed", e); }
+
+    setDebugIpDisplay("IP: Not Found (Blocker?)");
+    return null;
+  };
+
+  useEffect(() => {
+    fetchIpAddress();
+    
+    // Init Audio
+    const initAudio = () => {
+        if (!audioCtxRef.current) {
+            audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        }
+    };
+    window.addEventListener('click', initAudio, { once: true });
+    window.addEventListener('keydown', initAudio, { once: true });
+    window.addEventListener('touchstart', initAudio, { once: true });
+
+    return () => {
+        if (requestRef.current) cancelAnimationFrame(requestRef.current);
+        if (audioCtxRef.current) audioCtxRef.current.close();
+    }
+  }, []);
+
+
+  // --- Sound Synthesis ---
+  const playSound = (type: 'shoot' | 'explosion' | 'fuel' | 'coin') => {
+    if (!audioCtxRef.current) return;
+    const ctx = audioCtxRef.current;
+    
+    if (ctx.state === 'suspended') ctx.resume();
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    const now = ctx.currentTime;
+
+    if (type === 'shoot') {
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(880, now);
+      osc.frequency.exponentialRampToValueAtTime(110, now + 0.1);
+      gain.gain.setValueAtTime(0.1, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+      osc.start(now);
+      osc.stop(now + 0.1);
+    } else if (type === 'explosion') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(100, now);
+      osc.frequency.exponentialRampToValueAtTime(0.01, now + 0.3);
+      gain.gain.setValueAtTime(0.3, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+      osc.start(now);
+      osc.stop(now + 0.3);
+    } else if (type === 'fuel') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(440, now);
+      osc.frequency.linearRampToValueAtTime(880, now + 0.1);
+      gain.gain.setValueAtTime(0.1, now);
+      gain.gain.linearRampToValueAtTime(0, now + 0.1);
+      osc.start(now);
+      osc.stop(now + 0.1);
+    } else if (type === 'coin') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(1200, now);
+      osc.frequency.setValueAtTime(1600, now + 0.05);
+      gain.gain.setValueAtTime(0.1, now);
+      gain.gain.linearRampToValueAtTime(0, now + 0.1);
+      osc.start(now);
+      osc.stop(now + 0.1);
+    }
+  };
+
+  // --- Input Handling ---
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      state.current.keys[e.code] = true;
+      if (uiGameState === GameState.START || uiGameState === GameState.GAME_OVER) {
+         if (e.code === 'KeyR' || e.code === 'Enter') startGame();
+      }
+    };
     const handleKeyUp = (e: KeyboardEvent) => {
       state.current.keys[e.code] = false;
     };
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
-
-    initGame(); 
-    state.current.gameState = GameState.START;
-    setUiGameState(GameState.START);
-
-    const loop = () => {
-      update();
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-           ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-           draw(ctx);
-        }
-      }
-      requestRef.current = requestAnimationFrame(loop);
-    };
-    
-    requestRef.current = requestAnimationFrame(loop);
-
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
-      stopBossMusic(); // Clean up audio loop
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
+  }, [uiGameState]);
+
+  // --- Game Loop ---
+  const startGame = () => {
+    // Reset state
+    state.current = {
+      ...state.current,
+      gameState: GameState.PLAYING,
+      player: {
+        x: CANVAS_WIDTH / 2 - PLAYER_WIDTH / 2,
+        y: CANVAS_HEIGHT - 120,
+        width: PLAYER_WIDTH,
+        height: PLAYER_HEIGHT,
+        vx: 0,
+        vy: 0,
+        speedY: 0,
+        fuel: MAX_FUEL,
+        lives: 5,
+        score: 0,
+        gold: 0,
+        isInvulnerable: false,
+        invulnerableTimer: 0,
+        markedForDeletion: false,
+        weaponType: WeaponType.SINGLE,
+      },
+      bullets: [],
+      enemies: [],
+      particles: [],
+      riverSegments: [],
+      decorations: [],
+      frameCount: 0,
+      scrollSpeed: BASE_SCROLL_SPEED,
+      distanceTraveled: 0,
+      level: 1,
+      lastBridgePos: 0,
+      isBossActive: false,
+      joystickVector: { x: 0, y: 0 },
+      lastShotTime: 0
+    };
+
+    setUiGameState(GameState.PLAYING);
+    setSaveStatus("");
+    
+    // Initial river generation
+    for (let i = 0; i < CANVAS_HEIGHT / RIVER_SEGMENT_HEIGHT + 5; i++) {
+        generateRiverSegment(CANVAS_HEIGHT - i * RIVER_SEGMENT_HEIGHT);
+    }
+
+    if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    requestRef.current = requestAnimationFrame(gameLoop);
+    
+    // Try refreshing IP in background just in case
+    fetchIpAddress();
+  };
+
+  const generateRiverSegment = (y: number) => {
+    const segments = state.current.riverSegments;
+    let centerX = CANVAS_WIDTH / 2;
+    let width = 300; // Base width
+
+    if (segments.length > 0) {
+        const last = segments[segments.length - 1];
+        // Organic river movement using sine waves based on total distance/frame count
+        const time = state.current.frameCount * 0.01;
+        
+        // Perlin-ish noise approximation
+        const noise = Math.sin(time) * 20 + Math.sin(time * 0.5) * 40;
+        
+        centerX = CANVAS_WIDTH / 2 + noise;
+        
+        // Narrowing/Widening
+        width = 250 + Math.sin(time * 0.3) * 100;
+        
+        // Keep within bounds
+        centerX = Math.max(width/2 + 20, Math.min(CANVAS_WIDTH - width/2 - 20, centerX));
+    }
+
+    const segment = { y, centerX, width };
+    state.current.riverSegments.push(segment);
+
+    // Spawn Decoration on banks
+    if (Math.random() < 0.3) {
+        const isLeft = Math.random() > 0.5;
+        const bankX = isLeft ? (centerX - width/2 - 20) : (centerX + width/2 + 20);
+        state.current.decorations.push({
+            x: bankX,
+            y: y,
+            type: Math.random() > 0.8 ? DecorationType.HOUSE : DecorationType.TREE,
+            variant: Math.floor(Math.random() * 2), // 0 or 1
+            markedForDeletion: false
+        });
+    }
+  };
+
+  const spawnEnemy = (y: number) => {
+     if (state.current.isBossActive) return;
+
+     const rand = Math.random();
+     const segments = state.current.riverSegments;
+     // Find segment roughly at this Y
+     const segment = segments[segments.length - 1]; // Topmost
+     if (!segment) return;
+     
+     const minX = segment.centerX - segment.width / 2 + 20;
+     const maxX = segment.centerX + segment.width / 2 - 20;
+     const x = minX + Math.random() * (maxX - minX);
+
+     let type = EnemyType.SHIP;
+     let hp = 1;
+
+     // Bridge Spawning logic
+     if (state.current.distanceTraveled - state.current.lastBridgePos > 2000) {
+         type = EnemyType.BRIDGE;
+         hp = 10;
+         state.current.lastBridgePos = state.current.distanceTraveled;
+         // Center bridge
+         state.current.enemies.push({
+            type, x: segment.centerX - 64, y, width: 128, height: 40, vx: 0, vy: 0, shootTimer: 0, hp, maxHp: hp, markedForDeletion: false
+         });
+         return;
+     }
+
+     if (rand < 0.02) {
+         type = EnemyType.FUEL_DEPOT;
+         hp = 1;
+     } else if (rand < 0.05) {
+         type = EnemyType.HELICOPTER;
+         hp = 2;
+     } else if (rand < 0.07) {
+         type = EnemyType.JET;
+         hp = 1;
+     } else if (rand < 0.08) {
+        type = EnemyType.GOLD_COIN;
+        hp = 1;
+     } else {
+         return; // Don't spawn too frequently
+     }
+
+     state.current.enemies.push({
+         type,
+         x,
+         y,
+         width: type === EnemyType.FUEL_DEPOT ? 24 : 32,
+         height: type === EnemyType.FUEL_DEPOT ? 48 : 32,
+         vx: type === EnemyType.HELICOPTER ? (Math.random() > 0.5 ? 2 : -2) : 0,
+         vy: 0,
+         shootTimer: 0,
+         hp,
+         maxHp: hp,
+         markedForDeletion: false
+     });
+  };
+
+  const createExplosion = (x: number, y: number, color: string, count: number) => {
+    for (let i = 0; i < count; i++) {
+        state.current.particles.push({
+            x, y,
+            width: 4, height: 4,
+            vx: (Math.random() - 0.5) * 10,
+            vy: (Math.random() - 0.5) * 10,
+            life: 1.0,
+            color,
+            size: Math.random() * 4 + 2,
+            markedForDeletion: false
+        });
+    }
+    playSound('explosion');
+  };
+
+  const update = () => {
+    const s = state.current;
+    s.frameCount++;
+
+    // Input
+    const keys = s.keys;
+    let dx = 0;
+    let dy = 0;
+
+    // Keyboard
+    if (keys['ArrowLeft']) dx = -5;
+    if (keys['ArrowRight']) dx = 5;
+    
+    // Joystick
+    if (isJoystickActive) {
+        dx = s.joystickVector.x * 6; // Max speed 6
+        // Map Y joystick to speed up/down
+        if (s.joystickVector.y < -0.3) s.scrollSpeed = Math.min(s.scrollSpeed + 0.1, BASE_SCROLL_SPEED * 2.5);
+        if (s.joystickVector.y > 0.3) s.scrollSpeed = Math.max(s.scrollSpeed - 0.1, BASE_SCROLL_SPEED * 0.5);
+    } else {
+        // Keyboard speed control
+        if (keys['ArrowUp']) s.scrollSpeed = Math.min(s.scrollSpeed + 0.1, BASE_SCROLL_SPEED * 2.5);
+        else if (keys['ArrowDown']) s.scrollSpeed = Math.max(s.scrollSpeed - 0.1, BASE_SCROLL_SPEED * 0.5);
+        else {
+             // Return to base speed
+             if (s.scrollSpeed > BASE_SCROLL_SPEED) s.scrollSpeed -= 0.05;
+             if (s.scrollSpeed < BASE_SCROLL_SPEED) s.scrollSpeed += 0.05;
+        }
+    }
+
+    s.player.x += dx;
+    // Boundary check for player x is done against river banks below
+
+    // Shooting
+    const now = Date.now();
+    if ((keys['Space'] || keys['KeyZ'] || isJoystickActive) && now - s.lastShotTime > 200) { 
+       // For joystick, we autofire if active for simplicity, or add a button. 
+       // Here assume joystick movement enables fire or separate button needed? 
+       // Original River Raid fires on button. Let's make Space/Z or a UI button fire.
+       // We'll add auto-fire if keys held.
+       s.bullets.push({
+           x: s.player.x + PLAYER_WIDTH / 2 - 4,
+           y: s.player.y,
+           width: 8, height: 16,
+           vx: 0, vy: -12,
+           isEnemy: false,
+           markedForDeletion: false
+       });
+       s.lastShotTime = now;
+       playSound('shoot');
+    }
+
+    // Fuel Consumption
+    s.player.fuel -= FUEL_CONSUMPTION_RATE * (s.scrollSpeed / BASE_SCROLL_SPEED);
+    if (s.player.fuel <= 0) {
+        killPlayer("Fuel Empty");
+    }
+
+    s.distanceTraveled += s.scrollSpeed;
+
+    // --- Entity Updates ---
+
+    // River Generation
+    const lastSeg = s.riverSegments[s.riverSegments.length - 1];
+    if (lastSeg.y > -RIVER_SEGMENT_HEIGHT) {
+        generateRiverSegment(lastSeg.y - RIVER_SEGMENT_HEIGHT);
+        spawnEnemy(lastSeg.y - RIVER_SEGMENT_HEIGHT - 50);
+    }
+
+    // Move Segments
+    s.riverSegments.forEach(seg => seg.y += s.scrollSpeed);
+    // Remove old segments
+    if (s.riverSegments[0].y > CANVAS_HEIGHT) {
+        s.riverSegments.shift();
+    }
+    
+    // Decorations
+    s.decorations.forEach(d => {
+        d.y += s.scrollSpeed;
+        if (d.y > CANVAS_HEIGHT) d.markedForDeletion = true;
+    });
+    s.decorations = s.decorations.filter(d => !d.markedForDeletion);
+
+    // Collision Player vs River Banks
+    // Find segment at player Y
+    const playerSeg = s.riverSegments.find(seg => 
+        s.player.y + s.player.height > seg.y && s.player.y < seg.y + RIVER_SEGMENT_HEIGHT
+    );
+    if (playerSeg) {
+        const leftBank = playerSeg.centerX - playerSeg.width / 2;
+        const rightBank = playerSeg.centerX + playerSeg.width / 2;
+        
+        if (s.player.x < leftBank || s.player.x + s.player.width > rightBank) {
+            killPlayer("Crashed into land");
+        }
+    }
+
+    // Enemies
+    s.enemies.forEach(e => {
+        e.y += s.scrollSpeed; // Move down with river
+        e.x += e.vx;
+
+        // Helicopter Patrol logic
+        if (e.type === EnemyType.HELICOPTER) {
+             // Find boundaries
+             const seg = s.riverSegments.find(seg => e.y > seg.y && e.y < seg.y + RIVER_SEGMENT_HEIGHT);
+             if (seg) {
+                 if (e.x < seg.centerX - seg.width/2 + 20) e.vx = Math.abs(e.vx);
+                 if (e.x + e.width > seg.centerX + seg.width/2 - 20) e.vx = -Math.abs(e.vx);
+             }
+        }
+        
+        // Jet Logic (moves faster down)
+        if (e.type === EnemyType.JET) {
+            e.y += 2; 
+        }
+
+        // Bridge collision (Player crashes into bridge)
+        if (e.type === EnemyType.BRIDGE && !e.markedForDeletion) {
+             if (checkCollision(s.player, e)) {
+                 killPlayer("Crashed into bridge");
+             }
+        } else if (e.type === EnemyType.FUEL_DEPOT) {
+             // Fly over to refuel
+             if (checkCollision(s.player, e)) {
+                 s.player.fuel = Math.min(s.player.fuel + FUEL_REFILL_RATE, MAX_FUEL);
+                 playSound('fuel');
+             }
+        } else if (e.type === EnemyType.GOLD_COIN) {
+            if (checkCollision(s.player, e)) {
+                s.player.score += 500;
+                s.player.gold += 1;
+                e.markedForDeletion = true;
+                playSound('coin');
+            }
+        } else if (e.type !== EnemyType.BRIDGE) {
+            // Standard enemy collision
+            if (checkCollision(s.player, e)) {
+                killPlayer("Crashed into enemy");
+                e.markedForDeletion = true;
+                createExplosion(e.x, e.y, 'orange', 10);
+            }
+        }
+
+        if (e.y > CANVAS_HEIGHT) e.markedForDeletion = true;
+    });
+
+    // Bullets
+    s.bullets.forEach(b => {
+        b.x += b.vx;
+        b.y += b.vy;
+
+        // Bullet hit Enemy
+        s.enemies.forEach(e => {
+            if (!e.markedForDeletion && !b.markedForDeletion && checkCollision(b, e)) {
+                if (e.type === EnemyType.GOLD_COIN) return; // Don't shoot coins? Or maybe yes.
+
+                b.markedForDeletion = true;
+                e.hp--;
+                if (e.hp <= 0) {
+                    e.markedForDeletion = true;
+                    if (e.type === EnemyType.BRIDGE) {
+                        s.player.score += 500;
+                        createExplosion(e.x + e.width/2, e.y + e.height/2, 'gray', 30);
+                        // Checkpoint saved effectively by score
+                    } else if (e.type === EnemyType.FUEL_DEPOT) {
+                        s.player.score += 80;
+                        createExplosion(e.x, e.y, 'red', 15);
+                    } else {
+                        s.player.score += 100;
+                        createExplosion(e.x, e.y, 'orange', 10);
+                    }
+                }
+            }
+        });
+
+        if (b.y < 0 || b.y > CANVAS_HEIGHT) b.markedForDeletion = true;
+    });
+
+    // Particles
+    s.particles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.05;
+        if (p.life <= 0) p.markedForDeletion = true;
+    });
+
+    // Cleanup
+    s.bullets = s.bullets.filter(b => !b.markedForDeletion);
+    s.enemies = s.enemies.filter(e => !e.markedForDeletion);
+    s.particles = s.particles.filter(p => !p.markedForDeletion);
+
+    // Score from distance
+    if (s.frameCount % 60 === 0) s.player.score += 10;
+  };
+
+  const killPlayer = (reason: string) => {
+      console.log("Dead:", reason);
+      const s = state.current;
+      createExplosion(s.player.x, s.player.y, 'yellow', 50);
+      s.player.lives--;
+      
+      if (s.player.lives > 0) {
+          // Respawn logic
+          // Find safe spot (center of current river segment)
+          const seg = s.riverSegments.find(seg => seg.y > CANVAS_HEIGHT - 200 && seg.y < CANVAS_HEIGHT - 100) || s.riverSegments[0];
+          s.player.x = seg.centerX - PLAYER_WIDTH/2;
+          s.player.y = CANVAS_HEIGHT - 120;
+          s.player.vx = 0;
+          s.player.fuel = MAX_FUEL;
+      } else {
+          setUiGameState(GameState.GAME_OVER);
+          // Auto fetch leaderboard logic or just show input
+      }
+  };
+
+  const checkCollision = (r1: any, r2: any) => {
+      return (r1.x < r2.x + r2.width &&
+              r1.x + r1.width > r2.x &&
+              r1.y < r2.y + r2.height &&
+              r1.y + r1.height > r2.y);
+  };
+
+  const draw = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const s = state.current;
+
+    // Clear
+    ctx.fillStyle = '#0066cc'; // Water color
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // Draw Banks (Grass)
+    ctx.fillStyle = '#228822';
+    // Draw left and right banks based on riverSegments
+    // This is a naive polygon approach. For pixel art look, we draw rects.
+    // Better: Draw rects for each segment
+    
+    // Draw Decor (under grass? No, on grass)
+    // Draw Grass first
+    s.riverSegments.forEach(seg => {
+        const leftBankW = seg.centerX - seg.width/2;
+        const rightBankX = seg.centerX + seg.width/2;
+        
+        // Left grass
+        ctx.fillRect(0, seg.y, leftBankW, RIVER_SEGMENT_HEIGHT + 1); // +1 to fix gaps
+        // Right grass
+        ctx.fillRect(rightBankX, seg.y, CANVAS_WIDTH - rightBankX, RIVER_SEGMENT_HEIGHT + 1);
+        
+        // River Borders (grey/sand)
+        ctx.fillStyle = '#888888';
+        ctx.fillRect(leftBankW - 4, seg.y, 4, RIVER_SEGMENT_HEIGHT + 1);
+        ctx.fillRect(rightBankX, seg.y, 4, RIVER_SEGMENT_HEIGHT + 1);
+        ctx.fillStyle = '#228822';
+    });
+
+    // Draw Decorations
+    s.decorations.forEach(d => {
+        ctx.fillStyle = d.type === DecorationType.TREE ? '#004400' : '#884400';
+        if (d.type === DecorationType.TREE) {
+            // Simple tree
+            ctx.beginPath();
+            ctx.moveTo(d.x, d.y + 16);
+            ctx.lineTo(d.x + 8, d.y);
+            ctx.lineTo(d.x + 16, d.y + 16);
+            ctx.fill();
+        } else {
+             // House
+             ctx.fillRect(d.x, d.y, 16, 12);
+             ctx.fillStyle = '#aa0000'; // Roof
+             ctx.beginPath();
+             ctx.moveTo(d.x - 2, d.y);
+             ctx.lineTo(d.x + 8, d.y - 6);
+             ctx.lineTo(d.x + 18, d.y);
+             ctx.fill();
+        }
+    });
+
+    // Draw Bridges
+    s.enemies.filter(e => e.type === EnemyType.BRIDGE).forEach(b => {
+        ctx.fillStyle = '#555';
+        ctx.fillRect(0, b.y, CANVAS_WIDTH, b.height);
+        ctx.fillStyle = '#yellow';
+        ctx.fillStyle = '#000';
+        ctx.font = '10px monospace';
+        ctx.fillText("BRIDGE", b.x + 10, b.y + 20);
+    });
+
+    // Enemies
+    s.enemies.forEach(e => {
+        if (e.type === EnemyType.BRIDGE) return; // Handled above
+
+        ctx.save();
+        ctx.translate(e.x + e.width/2, e.y + e.height/2);
+        
+        if (e.type === EnemyType.SHIP) {
+            ctx.fillStyle = '#444';
+            ctx.fillRect(-e.width/2, -e.height/2, e.width, e.height);
+            // Detail
+            ctx.fillStyle = '#888';
+            ctx.fillRect(-e.width/4, -e.height/2 + 4, e.width/2, e.height - 8);
+        } else if (e.type === EnemyType.HELICOPTER) {
+            ctx.fillStyle = '#aa44aa';
+            ctx.beginPath();
+            ctx.arc(0, 0, e.width/2, 0, Math.PI * 2);
+            ctx.fill();
+            // Blades
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(-e.width, -2, e.width*2, 4);
+            ctx.fillRect(-2, -e.width, 4, e.width*2);
+        } else if (e.type === EnemyType.JET) {
+             ctx.fillStyle = '#white';
+             ctx.beginPath();
+             ctx.moveTo(0, -e.height/2);
+             ctx.lineTo(e.width/2, e.height/2);
+             ctx.lineTo(0, e.height/4);
+             ctx.lineTo(-e.width/2, e.height/2);
+             ctx.fill();
+        } else if (e.type === EnemyType.FUEL_DEPOT) {
+             ctx.fillStyle = '#ff6666';
+             ctx.fillRect(-e.width/2, -e.height/2, e.width, e.height);
+             ctx.fillStyle = '#fff';
+             ctx.font = '10px monospace';
+             ctx.fillText("FUEL", -10, 4);
+        } else if (e.type === EnemyType.GOLD_COIN) {
+            ctx.fillStyle = '#ffd700';
+            ctx.beginPath();
+            ctx.arc(0, 0, e.width/2, 0, Math.PI*2);
+            ctx.fill();
+            ctx.fillStyle = '#daa520';
+            ctx.font = 'bold 12px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText("$", 0, 1);
+        }
+
+        ctx.restore();
+    });
+
+    // Player
+    ctx.fillStyle = '#ffff00'; // Yellow jet
+    const p = s.player;
+    ctx.save();
+    ctx.translate(p.x + p.width/2, p.y + p.height/2);
+    // Draw Jet shape
+    ctx.beginPath();
+    ctx.moveTo(0, -p.height/2);
+    ctx.lineTo(p.width/2, p.height/2);
+    ctx.lineTo(0, p.height/2 - 5); // Engine indent
+    ctx.lineTo(-p.width/2, p.height/2);
+    ctx.fill();
+    
+    // Jet Stream (Engine Fire)
+    ctx.fillStyle = Math.random() > 0.5 ? 'orange' : 'red';
+    ctx.beginPath();
+    ctx.moveTo(-4, p.height/2 - 5);
+    ctx.lineTo(4, p.height/2 - 5);
+    ctx.lineTo(0, p.height/2 + 10 + Math.random() * 5);
+    ctx.fill();
+
+    ctx.restore();
+
+    // Bullets
+    ctx.fillStyle = '#fff';
+    s.bullets.forEach(b => {
+        ctx.fillRect(b.x, b.y, b.width, b.height);
+    });
+
+    // Particles
+    s.particles.forEach(pt => {
+        ctx.globalAlpha = pt.life;
+        ctx.fillStyle = pt.color;
+        ctx.fillRect(pt.x, pt.y, pt.size, pt.size);
+        ctx.globalAlpha = 1.0;
+    });
+
+    // HUD
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, CANVAS_HEIGHT - 60, CANVAS_WIDTH, 60);
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px "Press Start 2P", cursive'; // Fallback to monospace if font not loaded
+    ctx.fillText(`SCORE: ${s.player.score}`, 20, CANVAS_HEIGHT - 25);
+    ctx.fillText(`LIVES: ${s.player.lives}`, 400, CANVAS_HEIGHT - 25);
+    
+    // Fuel Bar
+    ctx.fillStyle = '#444';
+    ctx.fillRect(150, CANVAS_HEIGHT - 45, 200, 20);
+    const fuelPct = s.player.fuel / MAX_FUEL;
+    ctx.fillStyle = fuelPct < 0.2 ? 'red' : 'yellow';
+    ctx.fillRect(152, CANVAS_HEIGHT - 43, 196 * fuelPct, 16);
+    ctx.fillStyle = '#000';
+    ctx.font = '10px monospace';
+    ctx.fillText("FUEL", 230, CANVAS_HEIGHT - 32);
+
+  };
+
+  const gameLoop = () => {
+      if (state.current.gameState === GameState.PLAYING) {
+          update();
+      }
+      draw();
+      requestRef.current = requestAnimationFrame(gameLoop);
+  };
+
+  // --- Supabase / Leaderboard ---
+
+  const submitScore = async () => {
+    if (!inputValue.trim()) return;
+    if (!supabase) {
+        setSaveStatus("Supabase not configured!");
+        return;
+    }
+    setLoadingScores(true);
+    setSaveStatus("IP Checking...");
+    
+    // GUARD: Ensure IP exists before sending
+    let ip = userIpRef.current;
+    if (!ip) {
+        // Force retry one last time
+        ip = await fetchIpAddress();
+    }
+
+    // Still no IP? Use "Unknown" but warn user visually
+    const finalIp = ip || "Unknown (Blocked)";
+
+    setSaveStatus("Saving...");
+
+    try {
+        const { error } = await supabase
+            .from('scores')
+            .insert([
+                { 
+                    name: inputValue, 
+                    score: state.current.player.score,
+                    ip_address: finalIp
+                }
+            ]);
+
+        if (error) {
+            console.error("Supabase Error:", error);
+            // Check for table missing error
+            if (error.code === '42P01') {
+                setShowSqlModal(true);
+                setSaveStatus("Error: Table missing!");
+            } else {
+                setSaveStatus(`Error: ${error.message}`);
+            }
+        } else {
+            setSaveStatus("Saved!");
+            fetchLeaderboard();
+            setUiGameState(GameState.START); // Go back to start
+        }
+    } catch (err: any) {
+        setSaveStatus(`Net Error: ${err.message}`);
+    } finally {
+        setLoadingScores(false);
+    }
+  };
+
+  const fetchLeaderboard = async () => {
+      if (!supabase) return;
+      setLoadingScores(true);
+      const { data, error } = await supabase
+        .from('scores')
+        .select('name, score')
+        .order('score', { ascending: false })
+        .limit(MAX_LEADERBOARD_ENTRIES);
+
+      if (error) {
+          console.error("Fetch Error:", error);
+          if (error.code === '42P01') {
+             // Quietly fail or show indicator? 
+             // We won't popup modal on auto-fetch, only on save.
+          }
+      } else {
+          setLeaderboard(data || []);
+      }
+      setLoadingScores(false);
+  };
+
+  // Joystick handlers
+  const handleTouchStart = (e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    if (!joystickContainerRef.current) return;
+    const rect = joystickContainerRef.current.getBoundingClientRect();
+    setJoystickPos({
+        x: touch.clientX - rect.left - rect.width/2,
+        y: touch.clientY - rect.top - rect.height/2
+    });
+    setIsJoystickActive(true);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+      if (!isJoystickActive || !joystickContainerRef.current) return;
+      const touch = e.touches[0];
+      const rect = joystickContainerRef.current.getBoundingClientRect();
+      
+      let x = touch.clientX - rect.left - rect.width/2;
+      let y = touch.clientY - rect.top - rect.height/2;
+      
+      // Clamp
+      const maxDist = 40;
+      const dist = Math.sqrt(x*x + y*y);
+      if (dist > maxDist) {
+          x = (x / dist) * maxDist;
+          y = (y / dist) * maxDist;
+      }
+      
+      setJoystickPos({ x, y });
+      state.current.joystickVector = { x: x/maxDist, y: y/maxDist };
+  };
+
+  const handleTouchEnd = () => {
+      setIsJoystickActive(false);
+      setJoystickPos({ x: 0, y: 0 });
+      state.current.joystickVector = { x: 0, y: 0 };
+  };
+
+  useEffect(() => {
+    // Initial draw to show title screen
+    const ctx = canvasRef.current?.getContext('2d');
+    if (ctx) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    }
+    // Fetch leaderboard on mount
+    fetchLeaderboard();
   }, []);
 
   return (
-    <div className="flex flex-col items-center w-full relative">
-        <canvas
-            ref={canvasRef}
-            width={CANVAS_WIDTH}
-            height={CANVAS_HEIGHT}
-            className="block bg-black w-full object-contain"
-            style={{ maxHeight: '60vh' }}
-        />
+    <div className="relative w-full h-full flex flex-col items-center">
+      <canvas
+        ref={canvasRef}
+        width={CANVAS_WIDTH}
+        height={CANVAS_HEIGHT}
+        className="w-full h-auto max-h-[80vh] object-contain bg-blue-900 cursor-crosshair"
+      />
 
-        {/* Start Screen Overlay */}
-        {uiGameState === GameState.START && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center z-40 pointer-events-none">
-                {/* Canvas handles the text, we just add the button if needed, but canvas draws text 'Press Space' */}
-                {/* Let's add an interactive button for Mobile start and DB help */}
-                <div className="mt-40 pointer-events-auto flex flex-col gap-2 items-center">
-                     <button 
-                        onClick={() => initGame(true)}
-                        className="md:hidden px-6 py-3 bg-yellow-600 text-white font-press-start text-xs rounded animate-pulse"
-                     >
-                        TAP TO START
-                     </button>
-                     
-                     {supabase && (
-                         <button 
-                            onClick={() => setShowSqlModal(true)}
-                            className="px-3 py-2 bg-zinc-900/80 text-zinc-400 font-press-start text-[8px] rounded border border-zinc-700 hover:bg-zinc-800 hover:text-white transition-colors hover:border-zinc-500"
-                         >
-                            VERITABANI KURULUMU (SQL)
-                         </button>
-                     )}
-                </div>
+      {/* --- UI OVERLAYS --- */}
 
-                {/* Debug IP Display */}
-                <div className="absolute bottom-2 right-2 text-[8px] text-zinc-600 font-sans pointer-events-auto bg-black/40 px-1 rounded">
-                    Client ID: {debugIpDisplay}
-                </div>
-            </div>
-        )}
+      {/* START SCREEN */}
+      {uiGameState === GameState.START && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-white p-4">
+              <h1 className="text-4xl text-yellow-400 mb-4 font-bold tracking-widest text-center">RIVER STRIKE</h1>
+              <p className="mb-8 text-zinc-400 text-xs animate-pulse">PRESS ENTER TO START</p>
+              
+              <button 
+                onClick={startGame}
+                className="px-6 py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded shadow-[0_4px_0_rgb(20,80,20)] active:shadow-none active:translate-y-1 mb-4"
+              >
+                  START MISSION
+              </button>
 
-        {/* Missing Supabase Table Modal (Error 42P01) */}
-        {showSqlModal && (
-            <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-                <div className="bg-zinc-900 border-2 border-red-500 p-4 md:p-6 rounded-lg max-w-lg w-full shadow-2xl overflow-y-auto max-h-[80vh] flex flex-col">
-                    <h3 className="text-red-500 font-bold mb-3 font-press-start text-xs md:text-sm text-center">VERİTABANI KURULUMU GEREKLİ</h3>
-                    
-                    <div className="bg-red-900/30 p-2 mb-3 rounded border border-red-800">
-                        <p className="text-red-200 text-[10px] font-mono mb-1">HATA: Tablo eksik veya güncel değil.</p>
-                        <p className="text-zinc-300 text-[10px] font-sans">
-                            <strong>IP Adresi Kaydı</strong> (NULL hatasını düzeltmek için) aşağıdaki SQL komutunu tekrar çalıştırın.
-                        </p>
-                    </div>
+              <div className="flex gap-2 mb-4">
+                  <button onClick={() => setControlMode('BUTTONS')} className={`text-xs px-2 py-1 border ${controlMode === 'BUTTONS' ? 'bg-white text-black' : 'text-zinc-500'}`}>KEYBOARD</button>
+                  <button onClick={() => setControlMode('JOYSTICK')} className={`text-xs px-2 py-1 border ${controlMode === 'JOYSTICK' ? 'bg-white text-black' : 'text-zinc-500'}`}>TOUCH</button>
+              </div>
 
-                    <p className="text-zinc-400 text-[10px] mb-2 font-sans">
-                        Supabase SQL Editor'de şu adımları izleyin:
-                    </p>
-                    <ol className="text-zinc-300 text-[10px] list-decimal list-inside mb-3 font-sans space-y-1">
-                        <li>Supabase panelini açın > <strong>SQL Editor</strong> > <strong>New Query</strong>.</li>
-                        <li>Tablo zaten varsa (oyun çalışıyorsa) sadece şunu çalıştırın: <span className="text-green-400 font-mono">alter table scores add column if not exists ip_address text;</span></li>
-                        <li>Tablo hiç yoksa aşağıdaki kodun tamamını çalıştırın.</li>
-                    </ol>
+              {/* Manual SQL Trigger */}
+              <button 
+                onClick={() => setShowSqlModal(true)}
+                className="text-[10px] text-zinc-600 underline hover:text-zinc-400 mt-4"
+              >
+                Veritabanı Kurulumu (SQL)
+              </button>
 
-                    <div className="relative group bg-black rounded border border-zinc-700 p-2 mb-3">
-                        <div className="absolute top-2 right-2 text-[8px] text-zinc-500">SQL</div>
-                        <pre className="text-[9px] md:text-[10px] text-green-400 font-mono whitespace-pre-wrap select-all break-all">
-{`-- Eğer tablo hiç yoksa bunu kullanın:
-create table scores (
+              <div className="absolute bottom-2 right-2 text-[8px] text-zinc-600">
+                {debugIpDisplay}
+              </div>
+
+              {/* LEADERBOARD PREVIEW */}
+              <div className="mt-4 p-4 border border-zinc-800 bg-zinc-900/80 rounded max-w-xs w-full">
+                  <h3 className="text-xs text-yellow-500 mb-2 text-center border-b border-zinc-700 pb-1">TOP ACES</h3>
+                  {loadingScores ? <p className="text-[10px] text-center">Loading...</p> : (
+                      <ul className="text-[10px] space-y-1">
+                          {leaderboard.length === 0 && <li className="text-zinc-600 text-center">No records yet</li>}
+                          {leaderboard.slice(0, 5).map((entry, i) => (
+                              <li key={i} className="flex justify-between">
+                                  <span>{i+1}. {entry.name.substring(0, 10)}</span>
+                                  <span className="text-yellow-200">{entry.score}</span>
+                              </li>
+                          ))}
+                      </ul>
+                  )}
+              </div>
+          </div>
+      )}
+
+      {/* GAME OVER SCREEN */}
+      {uiGameState === GameState.GAME_OVER && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 text-white p-6">
+              <h2 className="text-3xl text-red-500 mb-2">GAME OVER</h2>
+              <p className="text-xl mb-6">SCORE: {state.current.player.score}</p>
+              
+              <div className="flex flex-col gap-2 w-full max-w-xs">
+                  <input 
+                    type="text" 
+                    maxLength={10}
+                    placeholder="ENTER NAME" 
+                    className="bg-zinc-800 border border-zinc-600 p-2 text-center text-white uppercase"
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value.toUpperCase())}
+                  />
+                  <button 
+                    onClick={submitScore}
+                    disabled={loadingScores || !inputValue}
+                    className="bg-yellow-600 hover:bg-yellow-500 text-black font-bold py-2 px-4 rounded disabled:opacity-50"
+                  >
+                      {loadingScores ? "SAVING..." : "SAVE RECORD"}
+                  </button>
+                  {saveStatus && <p className="text-[10px] text-center text-yellow-200 mt-1">{saveStatus}</p>}
+                  
+                  <button 
+                    onClick={() => setUiGameState(GameState.START)}
+                    className="mt-4 text-xs text-zinc-500 hover:text-white"
+                  >
+                      BACK TO MENU
+                  </button>
+              </div>
+          </div>
+      )}
+
+      {/* JOYSTICK CONTROLS (MOBILE) */}
+      {controlMode === 'JOYSTICK' && uiGameState === GameState.PLAYING && (
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-32 h-32 bg-white/10 rounded-full backdrop-blur-sm border border-white/20 touch-none"
+               ref={joystickContainerRef}
+               onTouchStart={handleTouchStart}
+               onTouchMove={handleTouchMove}
+               onTouchEnd={handleTouchEnd}
+          >
+              <div className="absolute w-12 h-12 bg-yellow-400/80 rounded-full shadow-lg pointer-events-none transition-transform duration-75"
+                   style={{ 
+                       left: '50%', top: '50%', 
+                       marginLeft: '-24px', marginTop: '-24px',
+                       transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)`
+                   }}
+              />
+          </div>
+      )}
+      
+      {/* FIRE BUTTON FOR TOUCH */}
+      {controlMode === 'JOYSTICK' && uiGameState === GameState.PLAYING && (
+          <button 
+             className="absolute bottom-10 right-4 w-16 h-16 bg-red-600/80 rounded-full border-4 border-red-800 active:bg-red-500 flex items-center justify-center text-white font-bold text-xs select-none"
+             onTouchStart={() => { state.current.keys['Space'] = true; }}
+             onTouchEnd={() => { state.current.keys['Space'] = false; }}
+          >
+              FIRE
+          </button>
+      )}
+
+      {/* SQL ERROR MODAL */}
+      {showSqlModal && (
+          <div className="absolute inset-0 z-50 bg-black/95 flex flex-col p-4 overflow-y-auto font-mono text-left">
+              <div className="flex justify-between items-center mb-4 border-b border-zinc-700 pb-2">
+                  <h3 className="text-red-400 font-bold">⚠️ Veritabanı Hatası (42P01)</h3>
+                  <button onClick={() => setShowSqlModal(false)} className="text-zinc-400 hover:text-white">✕</button>
+              </div>
+              
+              <div className="text-xs text-zinc-300 space-y-2 mb-4">
+                  <p><strong>Sorun:</strong> Supabase'de 'scores' tablosu bulunamadı.</p>
+                  <p><strong>Çözüm:</strong> Aşağıdaki adımları takip edin:</p>
+                  <ol className="list-decimal list-inside pl-2 space-y-1 text-zinc-400">
+                      <li>Supabase Dashboard'a gidin.</li>
+                      <li>Sol menüden <strong>SQL Editor</strong>'e tıklayın.</li>
+                      <li><strong>New Query</strong> diyerek boş bir sayfa açın.</li>
+                      <li>Aşağıdaki kodu kopyalayıp oraya yapıştırın.</li>
+                      <li>Sağ alttaki <strong>RUN</strong> butonuna basın.</li>
+                  </ol>
+              </div>
+
+              <div className="bg-zinc-900 border border-zinc-700 p-2 rounded relative group">
+                  <pre className="text-[10px] text-green-400 overflow-x-auto whitespace-pre-wrap">
+{`-- 1. Tabloyu oluştur
+create table if not exists scores (
   id bigint generated by default as identity primary key,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null,
   name text not null,
@@ -1731,170 +1079,42 @@ create table scores (
   ip_address text
 );
 
+-- 2. Güvenlik ayarlarını aç
 alter table scores enable row level security;
 
+-- 3. Herkesin okumasına izin ver
 create policy "Enable read access for all users"
 on scores for select
 to anon
 using (true);
 
+-- 4. Herkesin yazmasına izin ver
 create policy "Enable insert access for all users"
 on scores for insert
 to anon
 with check (true);
 
--- Eğer tablo zaten varsa, sadece bunu çalıştırın:
-alter table scores add column if not exists ip_address text;`}
-                        </pre>
-                    </div>
-                    <button 
-                        onClick={() => setShowSqlModal(false)}
-                        className="self-center px-4 py-2 bg-zinc-700 text-white text-xs font-press-start rounded hover:bg-zinc-600 transition-colors"
-                    >
-                        KAPAT
-                    </button>
-                </div>
-            </div>
-        )}
-
-        {/* Name Input Overlay */}
-        {uiGameState === GameState.LEADERBOARD_INPUT && !showSqlModal && (
-          <div className="absolute inset-0 flex items-center justify-center z-50 bg-black/50 backdrop-blur-sm">
-            <div className="bg-zinc-900 border-4 border-yellow-500 p-6 rounded-lg flex flex-col items-center gap-4 shadow-2xl">
-              <h2 className="text-yellow-400 font-bold text-center text-sm md:text-xl font-press-start">TOP PILOT!</h2>
-              <div className="text-white text-xs md:text-sm font-press-start">SCORE: {state.current.player.score}</div>
-              <input
-                autoFocus
-                type="text"
-                value={inputValue}
-                onChange={(e) => {
-                  const val = e.target.value.toUpperCase();
-                  if (val.length <= 12) setInputValue(val);
-                }}
-                className="bg-black text-white border-2 border-white p-2 font-press-start text-center text-sm md:text-lg w-48 uppercase outline-none focus:border-yellow-400"
-                placeholder="NAME"
-              />
-              <button
-                onClick={() => submitHighScore(inputValue)}
-                disabled={loadingScores}
-                className="bg-yellow-600 text-white font-press-start py-3 px-6 rounded text-xs hover:bg-yellow-500 active:scale-95 transition-transform disabled:opacity-50"
+-- (Opsiyonel) Eğer tablo zaten varsa ve IP sütunu yoksa:
+alter table scores add column if not exists ip_address text;
+`}
+                  </pre>
+                  <button 
+                    onClick={() => navigator.clipboard.writeText(`create table if not exists scores ( id bigint generated by default as identity primary key, created_at timestamp with time zone default timezone('utc'::text, now()) not null, name text not null, score bigint not null, ip_address text ); alter table scores enable row level security; create policy "Enable read access for all users" on scores for select to anon using (true); create policy "Enable insert access for all users" on scores for insert to anon with check (true); alter table scores add column if not exists ip_address text;`)}
+                    className="absolute top-2 right-2 bg-zinc-700 hover:bg-zinc-600 text-white text-[8px] px-2 py-1 rounded"
+                  >
+                      COPY SQL
+                  </button>
+              </div>
+              
+              <button 
+                 onClick={() => window.location.reload()}
+                 className="mt-4 bg-blue-600 hover:bg-blue-500 text-white py-2 rounded text-xs"
               >
-                {loadingScores ? "SAVING..." : "SAVE RECORD"}
+                  Sayfayı Yenile
               </button>
-            </div>
           </div>
-        )}
-        
-        {/* Mobile Controls */}
-        <div className="w-full max-w-[600px] grid grid-cols-3 gap-2 p-2 mt-auto select-none touch-none bg-zinc-900 border-t border-zinc-700">
-            
-            {/* LEFT SIDE: JOYSTICK OR BUTTONS */}
-            <div className="relative flex items-center justify-center h-32">
-                {controlMode === 'JOYSTICK' ? (
-                    <div 
-                        className="flex flex-col items-center justify-center w-full h-full"
-                        ref={joystickContainerRef}
-                        onTouchStart={handleJoystickStart}
-                        onTouchMove={handleJoystickMove}
-                        onTouchEnd={handleJoystickEnd}
-                    >
-                        <div className="w-24 h-24 bg-zinc-800 rounded-full border-2 border-zinc-600 flex items-center justify-center">
-                            <div 
-                                className="w-10 h-10 bg-zinc-500 rounded-full shadow-lg border border-zinc-400"
-                                style={{
-                                    transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)`,
-                                    transition: isJoystickActive ? 'none' : 'transform 0.1s ease-out'
-                                }}
-                            ></div>
-                        </div>
-                    </div>
-                ) : (
-                    <div className="grid grid-cols-3 gap-1 w-24 h-24">
-                        <div></div>
-                        <button 
-                             className="bg-zinc-700 rounded active:bg-zinc-600 flex items-center justify-center text-white"
-                             onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowUp'); }}
-                             onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowUp'); }}
-                        >▲</button>
-                        <div></div>
-                        
-                        <button 
-                             className="bg-zinc-700 rounded active:bg-zinc-600 flex items-center justify-center text-white"
-                             onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowLeft'); }}
-                             onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowLeft'); }}
-                        >◄</button>
-                        <div></div>
-                        <button 
-                             className="bg-zinc-700 rounded active:bg-zinc-600 flex items-center justify-center text-white"
-                             onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowRight'); }}
-                             onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowRight'); }}
-                        >►</button>
+      )}
 
-                        <div></div>
-                        <button 
-                             className="bg-zinc-700 rounded active:bg-zinc-600 flex items-center justify-center text-white"
-                             onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowDown'); }}
-                             onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowDown'); }}
-                        >▼</button>
-                        <div></div>
-                    </div>
-                )}
-                
-                {/* Mode Toggle Button (Floating in corner of this cell) */}
-                <button 
-                    onClick={() => setControlMode(prev => prev === 'JOYSTICK' ? 'BUTTONS' : 'JOYSTICK')}
-                    className="absolute bottom-0 left-0 text-[8px] bg-zinc-800 text-zinc-400 px-1 rounded border border-zinc-600 opacity-75"
-                >
-                    SWAP
-                </button>
-            </div>
-
-            {/* Center Area (Market / Restart) - Small Buttons */}
-            <div className="flex flex-col items-center justify-center gap-2">
-                 <button 
-                    className="w-full py-2 bg-yellow-600 rounded text-[10px] font-bold text-white shadow shadow-yellow-900 active:bg-yellow-500 active:translate-y-0.5"
-                    onClick={() => handleTouchStart('KeyM')}
-                 >
-                    MARKET
-                 </button>
-                 
-                 {/* Shop Controls - Only visible when in shop */}
-                 {uiGameState === GameState.SHOP && (
-                     <div className="grid grid-cols-2 gap-1 w-full">
-                         {[1, 2, 3, 4].map(num => (
-                             <button
-                                key={num}
-                                className="bg-blue-600 text-white text-[10px] p-2 rounded active:bg-blue-400"
-                                onClick={() => buyItem(num)}
-                             >
-                                 {num}
-                             </button>
-                         ))}
-                     </div>
-                 )}
-
-                 {/* Restart Button - Only visible on Game Over */}
-                 {uiGameState === GameState.GAME_OVER && (
-                     <button 
-                        className="w-full py-2 bg-blue-600 rounded text-[10px] font-bold text-white shadow shadow-blue-900 active:bg-blue-500 active:translate-y-0.5 animate-pulse"
-                        onClick={() => handleTouchStart('KeyR')}
-                     >
-                        RESTART
-                     </button>
-                 )}
-            </div>
-
-            {/* Action Area */}
-            <div className="flex items-center justify-center h-32">
-                 <button 
-                    className="w-20 h-20 md:w-24 md:h-24 rounded-full bg-red-600 border-4 border-red-800 shadow-lg active:bg-red-500 active:scale-95 flex items-center justify-center"
-                    onTouchStart={(e) => { e.preventDefault(); handleTouchStart('Space'); }}
-                    onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('Space'); }}
-                >
-                    <div className="text-white font-bold text-xs md:text-sm">FIRE</div>
-                </button>
-            </div>
-        </div>
     </div>
   );
-}
+};

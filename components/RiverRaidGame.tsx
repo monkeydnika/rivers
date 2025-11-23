@@ -265,16 +265,20 @@ export const RiverRaidGame: React.FC = () => {
     
     // 1. Try Supabase
     if (supabase) {
-        const { data, error } = await supabase
-            .from('scores')
-            .select('name, score')
-            .order('score', { ascending: false })
-            .limit(MAX_LEADERBOARD_ENTRIES);
-        
-        if (!error && data) {
-            state.current.highScores = data;
-            setLoadingScores(false);
-            return;
+        try {
+            const { data, error } = await supabase
+                .from('scores')
+                .select('name, score')
+                .order('score', { ascending: false })
+                .limit(MAX_LEADERBOARD_ENTRIES);
+            
+            if (!error && data) {
+                state.current.highScores = data;
+                setLoadingScores(false);
+                return;
+            }
+        } catch (err) {
+            console.error("Supabase load error:", err);
         }
     }
 
@@ -297,10 +301,16 @@ export const RiverRaidGame: React.FC = () => {
     
     // 1. Try Supabase
     if (supabase) {
-        await supabase.from('scores').insert([{ name, score }]);
-        await loadHighScores(); // Refresh
-        setLoadingScores(false);
-        return;
+        try {
+            const { error } = await supabase.from('scores').insert([{ name, score }]);
+            if (!error) {
+                await loadHighScores(); // Refresh
+                setLoadingScores(false);
+                return;
+            }
+        } catch (err) {
+            console.error("Supabase save error:", err);
+        }
     }
 
     // 2. Fallback to LocalStorage
@@ -1414,17 +1424,30 @@ export const RiverRaidGame: React.FC = () => {
       ctx.fillStyle = '#fff';
       ctx.font = '20px "Press Start 2P"';
       ctx.fillText(`FINAL SCORE: ${s.player.score}`, CANVAS_WIDTH/2, 200);
+      
+      // Connection Status Indicator
+      if (supabase) {
+          ctx.fillStyle = '#22c55e'; // Green
+          ctx.font = '10px "Press Start 2P"';
+          ctx.fillText("GLOBAL RANKING (ONLINE)", CANVAS_WIDTH/2, 260);
+      } else {
+          ctx.fillStyle = '#f59e0b'; // Amber
+          ctx.font = '10px "Press Start 2P"';
+          ctx.fillText("LOCAL RANKING (OFFLINE)", CANVAS_WIDTH/2, 260);
+      }
+
       ctx.fillStyle = '#facc15';
-      ctx.fillText("TOP SCORES", CANVAS_WIDTH/2, 280);
+      ctx.font = '20px "Press Start 2P"';
+      ctx.fillText("TOP SCORES", CANVAS_WIDTH/2, 290);
       
       if (loadingScores) {
           ctx.fillStyle = '#6b7280';
           ctx.font = '12px "Press Start 2P"';
-          ctx.fillText("LOADING SCORES...", CANVAS_WIDTH/2, 320);
+          ctx.fillText("LOADING SCORES...", CANVAS_WIDTH/2, 330);
       } else {
           ctx.font = '16px "Press Start 2P"';
           ctx.fillStyle = '#fff';
-          let yOff = 320;
+          let yOff = 330;
           s.highScores.forEach((entry, idx) => {
               ctx.textAlign = 'left';
               ctx.fillText(`${idx+1}. ${entry.name}`, CANVAS_WIDTH/2 - 120, yOff);

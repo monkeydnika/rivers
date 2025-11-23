@@ -32,6 +32,9 @@ export const RiverRaidGame: React.FC = () => {
 
   // Audio Context Ref
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const bossMusicOscRef = useRef<OscillatorNode | null>(null);
+  const bossMusicGainRef = useRef<GainNode | null>(null);
+  const bossLfoRef = useRef<OscillatorNode | null>(null);
 
   const state = useRef({
     gameState: GameState.START,
@@ -45,7 +48,7 @@ export const RiverRaidGame: React.FC = () => {
       vy: 0,
       speedY: 0,
       fuel: MAX_FUEL,
-      lives: 3,
+      lives: 5, // Start with 5 lives
       score: 0,
       gold: 0,
       isInvulnerable: false,
@@ -121,6 +124,52 @@ export const RiverRaidGame: React.FC = () => {
       osc.stop(ctx.currentTime + 0.2);
   };
 
+  const playHitSound = () => {
+      if (!audioCtxRef.current) return;
+      const ctx = audioCtxRef.current;
+      
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      // Stronger "Crunch" Impact
+      // Sawtooth wave dropping fast in pitch creates a 'zap'/'thud' hybrid
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(150, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(10, ctx.currentTime + 0.1);
+
+      // Louder initial attack
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+
+      osc.start();
+      osc.stop(ctx.currentTime + 0.1);
+  };
+
+  const playBossHitSound = () => {
+      if (!audioCtxRef.current) return;
+      const ctx = audioCtxRef.current;
+      
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      // Metallic impact: Square wave quick pitch drop
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(150, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.1);
+
+      gain.gain.setValueAtTime(0.05, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+
+      osc.start();
+      osc.stop(ctx.currentTime + 0.1);
+  };
+
   const playCollectSound = () => {
       if (!audioCtxRef.current) return;
       const ctx = audioCtxRef.current;
@@ -139,6 +188,74 @@ export const RiverRaidGame: React.FC = () => {
       osc.start();
       osc.stop(ctx.currentTime + 0.1);
   };
+
+  // --- Boss Background Music Logic ---
+  const startBossMusic = () => {
+      if (!audioCtxRef.current) return;
+      if (bossMusicOscRef.current) return; // Already playing
+
+      const ctx = audioCtxRef.current;
+      
+      // Main Drone
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      
+      // LFO for "Siren/Pulse" tension
+      const lfo = ctx.createOscillator();
+      const lfoGain = ctx.createGain();
+
+      // Deep, aggressive drone
+      osc.type = 'sawtooth'; 
+      osc.frequency.value = 55; // A1 (Low)
+      
+      // Rhythmic pulsing (2Hz = 120BPM tempo feel)
+      lfo.type = 'square'; // Abrupt changes for "Emergency" feel
+      lfo.frequency.value = 4; 
+      lfoGain.gain.value = 15; // Modulate pitch
+
+      lfo.connect(lfoGain);
+      lfoGain.connect(osc.frequency);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.08, ctx.currentTime + 0.5); // Louder volume
+
+      osc.start();
+      lfo.start();
+
+      bossMusicOscRef.current = osc;
+      bossMusicGainRef.current = gain;
+      bossLfoRef.current = lfo;
+  };
+
+  const stopBossMusic = () => {
+      if (!bossMusicOscRef.current || !audioCtxRef.current) return;
+      
+      const ctx = audioCtxRef.current;
+      const gain = bossMusicGainRef.current;
+      const osc = bossMusicOscRef.current;
+      const lfo = bossLfoRef.current;
+
+      // Fade out
+      if (gain) {
+        try {
+            gain.gain.cancelScheduledValues(ctx.currentTime);
+            gain.gain.setValueAtTime(gain.gain.value, ctx.currentTime);
+            gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.5);
+        } catch (e) {}
+      }
+
+      setTimeout(() => {
+          if (osc) try { osc.stop(); } catch(e) {}
+          if (lfo) try { lfo.stop(); } catch(e) {}
+          bossMusicOscRef.current = null;
+          bossMusicGainRef.current = null;
+          bossLfoRef.current = null;
+      }, 500);
+  };
+
 
   // --- Helpers ---
   const loadHighScores = () => {
@@ -281,12 +398,14 @@ export const RiverRaidGame: React.FC = () => {
 
   const initGame = (fullReset: boolean = false) => {
     initAudio(); // Ensure audio is ready
+    stopBossMusic(); // Reset music if active
+    
     const s = state.current;
     loadHighScores();
     s.player.gold = loadGold(); 
     
     if (fullReset) {
-      s.player.lives = 3;
+      s.player.lives = 5; // Start with 5 lives on full reset
       s.player.score = 0;
       s.distanceCounter = 0;
       s.gameFrameCount = 0;
@@ -370,13 +489,13 @@ export const RiverRaidGame: React.FC = () => {
 
   const spawnBoss = () => {
     const s = state.current;
-    // Calculate HP: Starts at 5 (at frame 3600), increases by 2 every subsequent boss (every 3600 frames = 2 steps of 1800)
-    // Frame 3600 / 1800 = 2.  3 + 2 = 5 HP.
-    // Frame 7200 / 1800 = 4.  3 + 4 = 7 HP.
+    // Calculate HP: Starts at 5 (at frame 3600), increases by 2 every subsequent boss
     const difficultyStep = Math.floor(s.gameFrameCount / 1800);
     const hp = 3 + difficultyStep;
 
     s.bossActive = true;
+    startBossMusic(); // START TENSION MUSIC
+
     s.enemies.push({
         type: EnemyType.BOSS,
         x: CANVAS_WIDTH / 2 - 40,
@@ -503,6 +622,7 @@ export const RiverRaidGame: React.FC = () => {
                       if (e.type === EnemyType.BOSS) {
                           e.hp -= 20; // Nuke damages boss
                           createExplosion(e.x + e.width/2, e.y + e.height/2, 'orange', 30);
+                          playBossHitSound();
                       }
                   });
                   s.bullets.forEach(b => b.markedForDeletion = true);
@@ -522,12 +642,15 @@ export const RiverRaidGame: React.FC = () => {
 
   const update = () => {
     const s = state.current;
-    if (s.gameState !== GameState.PLAYING) return;
+    if (s.gameState !== GameState.PLAYING) {
+        // If we leave playing state (e.g. game over), stop boss music
+        if (s.gameState === GameState.GAME_OVER) stopBossMusic();
+        return;
+    }
 
     s.gameFrameCount++;
 
     // Time Bonus & Difficulty Increase
-    // CHANGED: Slowed down difficulty progression significantly (30s instead of 7.5s)
     if (s.gameFrameCount % 1800 === 0 && s.gameFrameCount > 0) {
         const difficultyStep = Math.floor(s.gameFrameCount / 1800);
         s.difficulty = 1.0 + (difficultyStep * 0.1); 
@@ -671,6 +794,7 @@ export const RiverRaidGame: React.FC = () => {
     // Check if boss was deleted
     if (s.bossActive && !s.enemies.some(e => e.type === EnemyType.BOSS)) {
         s.bossActive = false;
+        stopBossMusic(); // STOP BOSS MUSIC
     }
     
     s.enemies = s.enemies.filter(e => !e.markedForDeletion);
@@ -787,6 +911,7 @@ export const RiverRaidGame: React.FC = () => {
                  bullet.markedForDeletion = true;
                  enemy.markedForDeletion = true;
                  createExplosion(enemy.x, enemy.y, 'orange');
+                 playHitSound(); // Sound on Hit
                  s.player.score += 150; 
               } else if (enemy.type === EnemyType.LIFE_ORB || enemy.type === EnemyType.WEAPON_CRATE || enemy.type === EnemyType.GOLD_COIN) {
                  bullet.markedForDeletion = true;
@@ -797,6 +922,7 @@ export const RiverRaidGame: React.FC = () => {
                  // Boss Damage Logic
                  bullet.markedForDeletion = true;
                  enemy.hp--;
+                 playBossHitSound();
                  // Small sparkle on hit
                  createExplosion(bullet.x, bullet.y, '#fff', 2);
                  if (enemy.hp <= 0) {
@@ -806,10 +932,12 @@ export const RiverRaidGame: React.FC = () => {
                      s.player.score += 5000;
                      s.player.gold += 50; // Big money reward
                      s.bossActive = false;
+                     stopBossMusic(); // STOP MUSIC
                  }
               } else {
                  bullet.markedForDeletion = true;
                  enemy.markedForDeletion = true;
+                 playHitSound(); // Sound on Hit
                  createExplosion(enemy.x, enemy.y);
                  s.player.score += 100;
               }
@@ -821,6 +949,7 @@ export const RiverRaidGame: React.FC = () => {
 
   const handleDeath = (reason: string) => {
     const s = state.current;
+    stopBossMusic(); // Stop boss music on death
     createExplosion(s.player.x, s.player.y, 'red', 50);
     playExplosionSound(); // Boom!
     s.player.lives--;
@@ -1344,6 +1473,7 @@ export const RiverRaidGame: React.FC = () => {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      stopBossMusic(); // Clean up audio loop
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
   }, []);

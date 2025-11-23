@@ -19,6 +19,7 @@ export const RiverRaidGame: React.FC = () => {
   const requestRef = useRef<number>(0);
   // Re-render tetiklemek için UI state
   const [uiGameState, setUiGameState] = useState<GameState>(GameState.START);
+  const [inputValue, setInputValue] = useState("");
   
   const state = useRef({
     gameState: GameState.START,
@@ -82,6 +83,8 @@ export const RiverRaidGame: React.FC = () => {
 
   // --- Mobile Input Helpers ---
   const handleTouchStart = (key: string) => {
+    if (state.current.gameState === GameState.LEADERBOARD_INPUT) return; // Disable game controls during input
+
     state.current.keys[key] = true;
     
     // Özel durumlar (Market, Restart vb. için anlık tetiklemeler)
@@ -147,6 +150,7 @@ export const RiverRaidGame: React.FC = () => {
       s.gameFrameCount = 0;
       s.difficulty = 1.0;
       s.playerNameInput = "";
+      setInputValue("");
     }
 
     s.player.x = CANVAS_WIDTH / 2 - PLAYER_WIDTH / 2;
@@ -592,16 +596,17 @@ export const RiverRaidGame: React.FC = () => {
         s.gameState = GameState.LEADERBOARD_INPUT;
         setUiGameState(GameState.LEADERBOARD_INPUT);
         s.playerNameInput = "";
+        setInputValue("");
     } else {
         s.gameState = GameState.GAME_OVER;
         setUiGameState(GameState.GAME_OVER);
     }
   };
 
-  const submitHighScore = () => {
+  const submitHighScore = (name: string) => {
       const s = state.current;
-      const name = s.playerNameInput || "UNK";
-      s.highScores.push({ name: name.toUpperCase(), score: s.player.score });
+      const finalName = name.trim().toUpperCase() || "UNK";
+      s.highScores.push({ name: finalName, score: s.player.score });
       s.highScores.sort((a, b) => b.score - a.score);
       if (s.highScores.length > MAX_LEADERBOARD_ENTRIES) {
           s.highScores.pop();
@@ -875,55 +880,46 @@ export const RiverRaidGame: React.FC = () => {
         ctx.fillText("PRESS 'M' TO RESUME", CANVAS_WIDTH/2, CANVAS_HEIGHT - 140);
         ctx.textAlign = 'left';
     }
-    else if (s.gameState === GameState.GAME_OVER || s.gameState === GameState.LEADERBOARD_INPUT) {
+    else if (s.gameState === GameState.GAME_OVER) {
       ctx.fillStyle = 'rgba(0,0,0,0.85)';
       ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
       ctx.textAlign = 'center';
-      if (s.gameState === GameState.LEADERBOARD_INPUT) {
-          ctx.fillStyle = '#facc15';
-          ctx.font = '30px "Press Start 2P"';
-          ctx.fillText("NEW HIGH SCORE!", CANVAS_WIDTH/2, 200);
-          ctx.fillStyle = '#fff';
-          ctx.font = '20px "Press Start 2P"';
-          ctx.fillText(`SCORE: ${s.player.score}`, CANVAS_WIDTH/2, 250);
-          
-          // Updated text: NAME instead of INITIALS
-          ctx.fillText("ENTER YOUR NAME:", CANVAS_WIDTH/2, 320);
-          
-          ctx.fillStyle = '#4ade80';
-          // Reduced font size to fit longer names
-          ctx.font = '30px "Press Start 2P"';
-          ctx.fillText(s.playerNameInput + (Math.floor(Date.now()/500)%2===0 ? "_" : " "), CANVAS_WIDTH/2, 380);
-          
-          ctx.fillStyle = '#94a3b8';
-          ctx.font = '12px "Press Start 2P"';
-          ctx.fillText("TYPE NAME, ENTER TO SAVE", CANVAS_WIDTH/2, 450);
-      } else {
-          ctx.fillStyle = '#ef4444';
-          ctx.font = '40px "Press Start 2P"';
-          ctx.fillText("GAME OVER", CANVAS_WIDTH/2, 150);
-          ctx.fillStyle = '#fff';
-          ctx.font = '20px "Press Start 2P"';
-          ctx.fillText(`FINAL SCORE: ${s.player.score}`, CANVAS_WIDTH/2, 200);
-          ctx.fillStyle = '#facc15';
-          ctx.fillText("TOP SCORES", CANVAS_WIDTH/2, 280);
-          ctx.font = '16px "Press Start 2P"';
-          ctx.fillStyle = '#fff';
-          let yOff = 320;
-          s.highScores.forEach((entry, idx) => {
-              ctx.textAlign = 'left';
-              ctx.fillText(`${idx+1}. ${entry.name}`, CANVAS_WIDTH/2 - 100, yOff);
-              ctx.textAlign = 'right';
-              ctx.fillText(`${entry.score}`, CANVAS_WIDTH/2 + 100, yOff);
-              yOff += 30;
-          });
-          ctx.textAlign = 'center';
-          ctx.fillStyle = '#fbbf24'; 
-          ctx.font = '15px "Press Start 2P"';
-          ctx.fillText("PRESS 'R' TO RESTART", CANVAS_WIDTH/2, CANVAS_HEIGHT - 100);
-      }
+      
+      ctx.fillStyle = '#ef4444';
+      ctx.font = '40px "Press Start 2P"';
+      ctx.fillText("GAME OVER", CANVAS_WIDTH/2, 150);
+      ctx.fillStyle = '#fff';
+      ctx.font = '20px "Press Start 2P"';
+      ctx.fillText(`FINAL SCORE: ${s.player.score}`, CANVAS_WIDTH/2, 200);
+      ctx.fillStyle = '#facc15';
+      ctx.fillText("TOP SCORES", CANVAS_WIDTH/2, 280);
+      ctx.font = '16px "Press Start 2P"';
+      ctx.fillStyle = '#fff';
+      let yOff = 320;
+      s.highScores.forEach((entry, idx) => {
+          ctx.textAlign = 'left';
+          ctx.fillText(`${idx+1}. ${entry.name}`, CANVAS_WIDTH/2 - 100, yOff);
+          ctx.textAlign = 'right';
+          ctx.fillText(`${entry.score}`, CANVAS_WIDTH/2 + 100, yOff);
+          yOff += 30;
+      });
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fbbf24'; 
+      ctx.font = '15px "Press Start 2P"';
+      ctx.fillText("PRESS 'R' TO RESTART", CANVAS_WIDTH/2, CANVAS_HEIGHT - 100);
+      
       ctx.textAlign = 'left';
-    } else if (s.gameState === GameState.START) {
+    } 
+    // Draw Leaderboard Input Background (But text is handled by HTML overlay now)
+    else if (s.gameState === GameState.LEADERBOARD_INPUT) {
+        ctx.fillStyle = 'rgba(0,0,0,0.9)';
+        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#facc15';
+        ctx.font = '30px "Press Start 2P"';
+        ctx.fillText("NEW HIGH SCORE!", CANVAS_WIDTH/2, 200);
+    }
+    else if (s.gameState === GameState.START) {
       ctx.fillStyle = 'rgba(0,0,0,0.7)';
       ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
       ctx.fillStyle = '#fbbf24';
@@ -941,6 +937,12 @@ export const RiverRaidGame: React.FC = () => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const s = state.current;
+      // Disable game key input when typing name
+      if (s.gameState === GameState.LEADERBOARD_INPUT) {
+          // Handled by HTML input
+          return;
+      }
+
       s.keys[e.code] = true;
       
       if (s.gameState === GameState.START && e.code === 'Space') {
@@ -963,18 +965,6 @@ export const RiverRaidGame: React.FC = () => {
           if (e.key === '2') buyItem(2);
           if (e.key === '3') buyItem(3);
           if (e.key === '4') buyItem(4);
-      }
-      else if (s.gameState === GameState.LEADERBOARD_INPUT) {
-          // Allow letters, numbers, and spaces. Increased limit to 12 chars.
-          if (e.key.length === 1 && e.key.match(/[a-zA-Z0-9 ]/)) {
-              if (s.playerNameInput.length < 12) {
-                  s.playerNameInput += e.key.toUpperCase();
-              }
-          } else if (e.code === 'Backspace') {
-              s.playerNameInput = s.playerNameInput.slice(0, -1);
-          } else if (e.code === 'Enter') {
-              if (s.playerNameInput.length > 0) submitHighScore();
-          }
       }
       else if (s.gameState === GameState.PLAYING && e.code === 'Space') {
         if (s.player.weaponType === WeaponType.SPREAD) {
@@ -1032,21 +1022,48 @@ export const RiverRaidGame: React.FC = () => {
   }, []);
 
   return (
-    <div className="flex flex-col items-center w-full">
+    <div className="flex flex-col items-center w-full relative">
         <canvas
             ref={canvasRef}
             width={CANVAS_WIDTH}
             height={CANVAS_HEIGHT}
-            className="block bg-black"
-            style={{ width: '100%', maxHeight: '70vh', aspectRatio: '3/4' }}
+            className="block bg-black w-full object-contain"
+            style={{ maxHeight: '60vh' }}
         />
+
+        {/* Name Input Overlay */}
+        {uiGameState === GameState.LEADERBOARD_INPUT && (
+          <div className="absolute inset-0 flex items-center justify-center z-50 bg-black/50 backdrop-blur-sm">
+            <div className="bg-zinc-900 border-4 border-yellow-500 p-6 rounded-lg flex flex-col items-center gap-4 shadow-2xl">
+              <h2 className="text-yellow-400 font-bold text-center text-sm md:text-xl font-press-start">TOP PILOT!</h2>
+              <div className="text-white text-xs md:text-sm font-press-start">SCORE: {state.current.player.score}</div>
+              <input
+                autoFocus
+                type="text"
+                value={inputValue}
+                onChange={(e) => {
+                  const val = e.target.value.toUpperCase();
+                  if (val.length <= 12) setInputValue(val);
+                }}
+                className="bg-black text-white border-2 border-white p-2 font-press-start text-center text-sm md:text-lg w-48 uppercase outline-none focus:border-yellow-400"
+                placeholder="NAME"
+              />
+              <button
+                onClick={() => submitHighScore(inputValue)}
+                className="bg-yellow-600 text-white font-press-start py-3 px-6 rounded text-xs hover:bg-yellow-500 active:scale-95 transition-transform"
+              >
+                SAVE RECORD
+              </button>
+            </div>
+          </div>
+        )}
         
         {/* Mobile Controls */}
-        <div className="w-full max-w-[600px] grid grid-cols-3 gap-4 p-4 mt-2 select-none touch-none bg-zinc-900 border-t border-zinc-700">
+        <div className="w-full max-w-[600px] grid grid-cols-3 gap-2 p-2 mt-auto select-none touch-none bg-zinc-900 border-t border-zinc-700">
             {/* D-PAD Area */}
-            <div className="flex flex-col items-center gap-1">
+            <div className="flex flex-col items-center gap-1 justify-center">
                 <button 
-                    className="w-12 h-12 bg-zinc-700 rounded active:bg-zinc-500 text-2xl flex items-center justify-center border-2 border-zinc-600 shadow-md"
+                    className="w-10 h-10 md:w-12 md:h-12 bg-zinc-700 rounded active:bg-zinc-500 text-xl flex items-center justify-center border-2 border-zinc-600 shadow-md"
                     onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowUp'); }}
                     onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowUp'); }}
                 >
@@ -1054,21 +1071,21 @@ export const RiverRaidGame: React.FC = () => {
                 </button>
                 <div className="flex gap-1">
                     <button 
-                        className="w-12 h-12 bg-zinc-700 rounded active:bg-zinc-500 text-2xl flex items-center justify-center border-2 border-zinc-600 shadow-md"
+                        className="w-10 h-10 md:w-12 md:h-12 bg-zinc-700 rounded active:bg-zinc-500 text-xl flex items-center justify-center border-2 border-zinc-600 shadow-md"
                         onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowLeft'); }}
                         onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowLeft'); }}
                     >
                         ⬅️
                     </button>
                     <button 
-                        className="w-12 h-12 bg-zinc-700 rounded active:bg-zinc-500 text-2xl flex items-center justify-center border-2 border-zinc-600 shadow-md"
+                        className="w-10 h-10 md:w-12 md:h-12 bg-zinc-700 rounded active:bg-zinc-500 text-xl flex items-center justify-center border-2 border-zinc-600 shadow-md"
                         onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowDown'); }}
                         onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowDown'); }}
                     >
                         ⬇️
                     </button>
                     <button 
-                        className="w-12 h-12 bg-zinc-700 rounded active:bg-zinc-500 text-2xl flex items-center justify-center border-2 border-zinc-600 shadow-md"
+                        className="w-10 h-10 md:w-12 md:h-12 bg-zinc-700 rounded active:bg-zinc-500 text-xl flex items-center justify-center border-2 border-zinc-600 shadow-md"
                         onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowRight'); }}
                         onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowRight'); }}
                     >
@@ -1078,9 +1095,9 @@ export const RiverRaidGame: React.FC = () => {
             </div>
 
             {/* Center Area (Market / Restart) */}
-            <div className="flex flex-col items-center justify-center gap-4">
+            <div className="flex flex-col items-center justify-center gap-2">
                  <button 
-                    className="w-full py-3 bg-yellow-600 rounded text-xs font-bold text-white shadow-lg active:bg-yellow-500 border-b-4 border-yellow-800 active:border-b-0 active:translate-y-1"
+                    className="w-full py-2 bg-yellow-600 rounded text-[10px] md:text-xs font-bold text-white shadow-lg active:bg-yellow-500 border-b-4 border-yellow-800 active:border-b-0 active:translate-y-1"
                     onClick={() => handleTouchStart('KeyM')}
                  >
                     MARKET
@@ -1092,7 +1109,7 @@ export const RiverRaidGame: React.FC = () => {
                          {[1, 2, 3, 4].map(num => (
                              <button
                                 key={num}
-                                className="bg-blue-600 text-white text-[10px] p-1 rounded"
+                                className="bg-blue-600 text-white text-[10px] p-2 rounded active:bg-blue-400"
                                 onClick={() => buyItem(num)}
                              >
                                  {num}
@@ -1104,7 +1121,7 @@ export const RiverRaidGame: React.FC = () => {
                  {/* Restart Button - Only visible on Game Over */}
                  {uiGameState === GameState.GAME_OVER && (
                      <button 
-                        className="w-full py-3 bg-blue-600 rounded text-xs font-bold text-white shadow-lg active:bg-blue-500 animate-pulse"
+                        className="w-full py-2 bg-blue-600 rounded text-[10px] md:text-xs font-bold text-white shadow-lg active:bg-blue-500 animate-pulse"
                         onClick={() => handleTouchStart('KeyR')}
                      >
                         RESTART
@@ -1115,11 +1132,11 @@ export const RiverRaidGame: React.FC = () => {
             {/* Action Area */}
             <div className="flex items-center justify-center">
                  <button 
-                    className="w-20 h-20 rounded-full bg-red-600 border-4 border-red-800 shadow-lg active:bg-red-500 active:scale-95 flex items-center justify-center"
+                    className="w-16 h-16 md:w-20 md:h-20 rounded-full bg-red-600 border-4 border-red-800 shadow-lg active:bg-red-500 active:scale-95 flex items-center justify-center"
                     onTouchStart={(e) => { e.preventDefault(); handleTouchStart('Space'); }}
                     onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('Space'); }}
                 >
-                    <div className="text-white font-bold text-xs">FIRE</div>
+                    <div className="text-white font-bold text-[10px] md:text-xs">FIRE</div>
                 </button>
             </div>
         </div>

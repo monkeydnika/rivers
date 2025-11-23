@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { GameState, Player, Enemy, EnemyType, Bullet, Particle, LeaderboardEntry, WeaponType, Decoration, DecorationType } from '../types';
+import { supabase } from '../supabaseClient';
 
 // --- Constants ---
 const CANVAS_WIDTH = 600;
@@ -11,7 +12,7 @@ const MAX_FUEL = 100;
 const FUEL_CONSUMPTION_RATE = 0.05;
 const FUEL_REFILL_RATE = 0.8;
 const RIVER_SEGMENT_HEIGHT = 20;
-const MAX_LEADERBOARD_ENTRIES = 5;
+const MAX_LEADERBOARD_ENTRIES = 10; // Increased for global board
 const SHOOTING_START_FRAME = 1800; 
 const BOSS_SPAWN_INTERVAL = 3600; // Every 60 seconds (60 * 60)
 
@@ -21,6 +22,7 @@ export const RiverRaidGame: React.FC = () => {
   // Re-render tetiklemek için UI state
   const [uiGameState, setUiGameState] = useState<GameState>(GameState.START);
   const [inputValue, setInputValue] = useState("");
+  const [loadingScores, setLoadingScores] = useState(false);
   
   // Input Controls State - DEFAULT CHANGED TO BUTTONS
   const [controlMode, setControlMode] = useState<'JOYSTICK' | 'BUTTONS'>('BUTTONS');
@@ -258,7 +260,25 @@ export const RiverRaidGame: React.FC = () => {
 
 
   // --- Helpers ---
-  const loadHighScores = () => {
+  const loadHighScores = async () => {
+    setLoadingScores(true);
+    
+    // 1. Try Supabase
+    if (supabase) {
+        const { data, error } = await supabase
+            .from('scores')
+            .select('name, score')
+            .order('score', { ascending: false })
+            .limit(MAX_LEADERBOARD_ENTRIES);
+        
+        if (!error && data) {
+            state.current.highScores = data;
+            setLoadingScores(false);
+            return;
+        }
+    }
+
+    // 2. Fallback to LocalStorage
     const stored = localStorage.getItem('riverRaidScores');
     if (stored) {
       state.current.highScores = JSON.parse(stored);
@@ -269,10 +289,29 @@ export const RiverRaidGame: React.FC = () => {
         { name: "CPU", score: 1000 },
       ];
     }
+    setLoadingScores(false);
   };
 
-  const saveHighScores = () => {
-    localStorage.setItem('riverRaidScores', JSON.stringify(state.current.highScores));
+  const saveHighScores = async (name: string, score: number) => {
+    setLoadingScores(true);
+    
+    // 1. Try Supabase
+    if (supabase) {
+        await supabase.from('scores').insert([{ name, score }]);
+        await loadHighScores(); // Refresh
+        setLoadingScores(false);
+        return;
+    }
+
+    // 2. Fallback to LocalStorage
+    const s = state.current;
+    s.highScores.push({ name, score });
+    s.highScores.sort((a, b) => b.score - a.score);
+    if (s.highScores.length > MAX_LEADERBOARD_ENTRIES) {
+        s.highScores.pop();
+    }
+    localStorage.setItem('riverRaidScores', JSON.stringify(s.highScores));
+    setLoadingScores(false);
   };
 
   const loadGold = (): number => {
@@ -401,7 +440,9 @@ export const RiverRaidGame: React.FC = () => {
     stopBossMusic(); // Reset music if active
     
     const s = state.current;
-    loadHighScores();
+    // We load scores asynchronously in background, don't block start
+    loadHighScores(); 
+    
     s.player.gold = loadGold(); 
     
     if (fullReset) {
@@ -969,29 +1010,39 @@ export const RiverRaidGame: React.FC = () => {
     }
   };
 
-  const checkHighScore = () => {
+  const checkHighScore = async () => {
     const s = state.current;
-    const lowestHigh = s.highScores.length < MAX_LEADERBOARD_ENTRIES ? 0 : s.highScores[s.highScores.length - 1].score;
-    if (s.player.score > lowestHigh || s.highScores.length < MAX_LEADERBOARD_ENTRIES) {
-        s.gameState = GameState.LEADERBOARD_INPUT;
-        setUiGameState(GameState.LEADERBOARD_INPUT);
-        s.playerNameInput = "";
-        setInputValue("");
+    
+    // If online, we need to know the lowest score on the board properly
+    // but to avoid network delay on death, we just assume they might have made it
+    // if their score is reasonably high or the list is empty.
+    // Simpler: Just show input if score > 0
+    if (s.player.score > 0) {
+        // We will validate against real data when they submit or we load the screen
+        await loadHighScores(); // Refresh latest
+        const lowest = s.highScores.length < MAX_LEADERBOARD_ENTRIES ? 0 : s.highScores[s.highScores.length-1].score;
+        
+        if (s.player.score > lowest || s.highScores.length < MAX_LEADERBOARD_ENTRIES) {
+            s.gameState = GameState.LEADERBOARD_INPUT;
+            setUiGameState(GameState.LEADERBOARD_INPUT);
+            s.playerNameInput = "";
+            setInputValue("");
+        } else {
+            s.gameState = GameState.GAME_OVER;
+            setUiGameState(GameState.GAME_OVER);
+        }
     } else {
         s.gameState = GameState.GAME_OVER;
         setUiGameState(GameState.GAME_OVER);
     }
   };
 
-  const submitHighScore = (name: string) => {
+  const submitHighScore = async (name: string) => {
       const s = state.current;
       const finalName = name.trim().toUpperCase() || "UNK";
-      s.highScores.push({ name: finalName, score: s.player.score });
-      s.highScores.sort((a, b) => b.score - a.score);
-      if (s.highScores.length > MAX_LEADERBOARD_ENTRIES) {
-          s.highScores.pop();
-      }
-      saveHighScores();
+      
+      await saveHighScores(finalName, s.player.score);
+
       s.gameState = GameState.GAME_OVER;
       setUiGameState(GameState.GAME_OVER);
   };
@@ -1365,16 +1416,23 @@ export const RiverRaidGame: React.FC = () => {
       ctx.fillText(`FINAL SCORE: ${s.player.score}`, CANVAS_WIDTH/2, 200);
       ctx.fillStyle = '#facc15';
       ctx.fillText("TOP SCORES", CANVAS_WIDTH/2, 280);
-      ctx.font = '16px "Press Start 2P"';
-      ctx.fillStyle = '#fff';
-      let yOff = 320;
-      s.highScores.forEach((entry, idx) => {
-          ctx.textAlign = 'left';
-          ctx.fillText(`${idx+1}. ${entry.name}`, CANVAS_WIDTH/2 - 100, yOff);
-          ctx.textAlign = 'right';
-          ctx.fillText(`${entry.score}`, CANVAS_WIDTH/2 + 100, yOff);
-          yOff += 30;
-      });
+      
+      if (loadingScores) {
+          ctx.fillStyle = '#6b7280';
+          ctx.font = '12px "Press Start 2P"';
+          ctx.fillText("LOADING SCORES...", CANVAS_WIDTH/2, 320);
+      } else {
+          ctx.font = '16px "Press Start 2P"';
+          ctx.fillStyle = '#fff';
+          let yOff = 320;
+          s.highScores.forEach((entry, idx) => {
+              ctx.textAlign = 'left';
+              ctx.fillText(`${idx+1}. ${entry.name}`, CANVAS_WIDTH/2 - 120, yOff);
+              ctx.textAlign = 'right';
+              ctx.fillText(`${entry.score}`, CANVAS_WIDTH/2 + 120, yOff);
+              yOff += 30;
+          });
+      }
       ctx.textAlign = 'center';
       ctx.fillStyle = '#fbbf24'; 
       ctx.font = '15px "Press Start 2P"';
@@ -1507,9 +1565,10 @@ export const RiverRaidGame: React.FC = () => {
               />
               <button
                 onClick={() => submitHighScore(inputValue)}
-                className="bg-yellow-600 text-white font-press-start py-3 px-6 rounded text-xs hover:bg-yellow-500 active:scale-95 transition-transform"
+                disabled={loadingScores}
+                className="bg-yellow-600 text-white font-press-start py-3 px-6 rounded text-xs hover:bg-yellow-500 active:scale-95 transition-transform disabled:opacity-50"
               >
-                SAVE RECORD
+                {loadingScores ? "SAVING..." : "SAVE RECORD"}
               </button>
             </div>
           </div>

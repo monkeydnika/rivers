@@ -1596,6 +1596,31 @@ export const RiverRaidGame: React.FC = () => {
             style={{ maxHeight: '60vh' }}
         />
 
+        {/* Start Screen Overlay */}
+        {uiGameState === GameState.START && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center z-40 pointer-events-none">
+                {/* Canvas handles the text, we just add the button if needed, but canvas draws text 'Press Space' */}
+                {/* Let's add an interactive button for Mobile start and DB help */}
+                <div className="mt-40 pointer-events-auto flex flex-col gap-2 items-center">
+                     <button 
+                        onClick={() => initGame(true)}
+                        className="md:hidden px-6 py-3 bg-yellow-600 text-white font-press-start text-xs rounded animate-pulse"
+                     >
+                        TAP TO START
+                     </button>
+                     
+                     {supabase && (
+                         <button 
+                            onClick={() => setShowSqlModal(true)}
+                            className="px-3 py-2 bg-zinc-900/80 text-zinc-400 font-press-start text-[8px] rounded border border-zinc-700 hover:bg-zinc-800 hover:text-white transition-colors hover:border-zinc-500"
+                         >
+                            VERITABANI KURULUMU (SQL)
+                         </button>
+                     )}
+                </div>
+            </div>
+        )}
+
         {/* Missing Supabase Table Modal (Error 42P01) */}
         {showSqlModal && (
             <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
@@ -1646,7 +1671,7 @@ with check (true);`}
                         onClick={() => setShowSqlModal(false)}
                         className="self-center px-4 py-2 bg-zinc-700 text-white text-xs font-press-start rounded hover:bg-zinc-600 transition-colors"
                     >
-                        KAPAT VE OYNA (OFFLINE)
+                        KAPAT
                     </button>
                 </div>
             </div>

@@ -12,7 +12,7 @@ const FUEL_CONSUMPTION_RATE = 0.05;
 const FUEL_REFILL_RATE = 0.8;
 const RIVER_SEGMENT_HEIGHT = 20;
 const MAX_LEADERBOARD_ENTRIES = 5;
-const SHOOTING_START_FRAME = 3600; // 60 seconds * 60 FPS
+const SHOOTING_START_FRAME = 1800; // REDUCED: 30 seconds * 60 FPS (was 3600)
 
 export const RiverRaidGame: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -21,10 +21,16 @@ export const RiverRaidGame: React.FC = () => {
   const [uiGameState, setUiGameState] = useState<GameState>(GameState.START);
   const [inputValue, setInputValue] = useState("");
   
+  // Input Controls State
+  const [controlMode, setControlMode] = useState<'JOYSTICK' | 'BUTTONS'>('JOYSTICK');
+
   // Joystick State
   const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
   const [isJoystickActive, setIsJoystickActive] = useState(false);
   const joystickContainerRef = useRef<HTMLDivElement>(null);
+
+  // Audio Context Ref
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
   const state = useRef({
     gameState: GameState.START,
@@ -59,6 +65,79 @@ export const RiverRaidGame: React.FC = () => {
     playerNameInput: "",
   });
 
+  // --- Audio System ---
+  const initAudio = () => {
+      if (!audioCtxRef.current) {
+          audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      if (audioCtxRef.current.state === 'suspended') {
+          audioCtxRef.current.resume();
+      }
+  };
+
+  const playShootSound = () => {
+      if (!audioCtxRef.current) return;
+      const ctx = audioCtxRef.current;
+      
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      // Atari-style Pew: Square wave dropping in frequency
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(110, ctx.currentTime + 0.15);
+
+      gain.gain.setValueAtTime(0.05, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+
+      osc.start();
+      osc.stop(ctx.currentTime + 0.15);
+  };
+
+  const playExplosionSound = () => {
+      if (!audioCtxRef.current) return;
+      const ctx = audioCtxRef.current;
+      
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      // Atari-style Boom: Sawtooth or Square low freq rumble
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(100, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(10, ctx.currentTime + 0.2);
+
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+  };
+
+  const playCollectSound = () => {
+      if (!audioCtxRef.current) return;
+      const ctx = audioCtxRef.current;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(1200, ctx.currentTime);
+      osc.frequency.linearRampToValueAtTime(1800, ctx.currentTime + 0.1);
+      
+      gain.gain.setValueAtTime(0.05, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.1);
+      
+      osc.start();
+      osc.stop(ctx.currentTime + 0.1);
+  };
+
   // --- Helpers ---
   const loadHighScores = () => {
     const stored = localStorage.getItem('riverRaidScores');
@@ -88,6 +167,7 @@ export const RiverRaidGame: React.FC = () => {
 
   // --- Mobile Input Helpers ---
   const handleTouchStart = (key: string) => {
+    initAudio(); // Initialize audio on first touch
     if (state.current.gameState === GameState.LEADERBOARD_INPUT) return; 
 
     state.current.keys[key] = true;
@@ -121,6 +201,7 @@ export const RiverRaidGame: React.FC = () => {
 
   // Joystick Logic
   const handleJoystickStart = (e: React.TouchEvent) => {
+    initAudio(); // Initialize audio
     if (state.current.gameState !== GameState.PLAYING) return;
     setIsJoystickActive(true);
     updateJoystick(e);
@@ -163,8 +244,9 @@ export const RiverRaidGame: React.FC = () => {
      
      setJoystickPos({ x: clampedX, y: clampedY });
 
-     // Map to keys
-     const deadzone = 10;
+     // Map to keys with REDUCED SENSITIVITY (Higher Deadzone)
+     // Previous deadzone was 10. Increasing to 25 makes it less "twitchy".
+     const deadzone = 25; 
      state.current.keys['ArrowLeft'] = clampedX < -deadzone;
      state.current.keys['ArrowRight'] = clampedX > deadzone;
      state.current.keys['ArrowUp'] = clampedY < -deadzone;
@@ -173,6 +255,7 @@ export const RiverRaidGame: React.FC = () => {
 
   const fireBullet = () => {
       const s = state.current;
+      playShootSound(); // Sound Effect
       if (s.player.weaponType === WeaponType.SPREAD) {
         s.bullets.push(
             { x: s.player.x + s.player.width / 2 - 2, y: s.player.y, width: 4, height: 10, vx: 0, vy: 10, isEnemy: false, markedForDeletion: false },
@@ -196,6 +279,7 @@ export const RiverRaidGame: React.FC = () => {
   // --- Game Engine Methods ---
 
   const initGame = (fullReset: boolean = false) => {
+    initAudio(); // Ensure audio is ready
     const s = state.current;
     loadHighScores();
     s.player.gold = loadGold(); 
@@ -352,6 +436,7 @@ export const RiverRaidGame: React.FC = () => {
               cost = 5;
               if (s.player.gold >= cost) {
                   s.player.fuel = MAX_FUEL;
+                  playCollectSound();
                   success = true;
               }
               break;
@@ -360,6 +445,7 @@ export const RiverRaidGame: React.FC = () => {
               if (s.player.gold >= cost) {
                   s.player.isInvulnerable = true;
                   s.player.invulnerableTimer = 600;
+                  playCollectSound();
                   success = true;
               }
               break;
@@ -367,6 +453,7 @@ export const RiverRaidGame: React.FC = () => {
               cost = 15;
               if (s.player.gold >= cost) {
                   s.player.weaponType = WeaponType.SPREAD;
+                  playCollectSound();
                   success = true;
               }
               break;
@@ -403,9 +490,10 @@ export const RiverRaidGame: React.FC = () => {
 
     s.gameFrameCount++;
 
-    // Time Bonus
-    if (s.gameFrameCount % 900 === 0 && s.gameFrameCount > 0) {
-        const difficultyStep = Math.floor(s.gameFrameCount / 900);
+    // Time Bonus & Difficulty Increase
+    // CHANGED: Reduced interval from 900 to 450 to double the difficulty progression speed.
+    if (s.gameFrameCount % 450 === 0 && s.gameFrameCount > 0) {
+        const difficultyStep = Math.floor(s.gameFrameCount / 450);
         s.difficulty = 1.0 + (difficultyStep * 0.1); 
         
         s.player.score += 500;
@@ -482,7 +570,7 @@ export const RiverRaidGame: React.FC = () => {
          if (enemy.x <= 50 || enemy.x + enemy.width >= CANVAS_WIDTH - 50) enemy.vx *= -1;
       }
 
-      // Shooting Logic: 1 minute delay
+      // Shooting Logic
       if (s.gameFrameCount > SHOOTING_START_FRAME) {
           if (enemy.y > 0 && enemy.y < CANVAS_HEIGHT - 100) { 
              if (enemy.type === EnemyType.SHIP || enemy.type === EnemyType.HELICOPTER || enemy.type === EnemyType.JET) {
@@ -573,20 +661,24 @@ export const RiverRaidGame: React.FC = () => {
       if (checkCollision(s.player, enemy)) {
         if (enemy.type === EnemyType.FUEL_DEPOT) {
            s.player.fuel = Math.min(s.player.fuel + FUEL_REFILL_RATE * 30, MAX_FUEL);
+           playCollectSound();
            enemy.markedForDeletion = true;
         } else if (enemy.type === EnemyType.GOLD_COIN) {
            s.player.gold++;
            s.player.score += 50;
            saveGold(s.player.gold);
+           playCollectSound();
            enemy.markedForDeletion = true;
         } else if (enemy.type === EnemyType.LIFE_ORB) {
            s.player.lives++;
            s.player.score += 100;
+           playCollectSound();
            createExplosion(enemy.x + enemy.width/2, enemy.y + enemy.height/2, '#ec4899', 20);
            enemy.markedForDeletion = true;
         } else if (enemy.type === EnemyType.WEAPON_CRATE) {
            s.player.weaponType = WeaponType.SPREAD;
            s.player.score += 100;
+           playCollectSound();
            createExplosion(enemy.x + enemy.width/2, enemy.y + enemy.height/2, '#06b6d4', 20);
            enemy.markedForDeletion = true;
         } else if (enemy.type !== EnemyType.BRIDGE) {
@@ -633,6 +725,7 @@ export const RiverRaidGame: React.FC = () => {
   const handleDeath = (reason: string) => {
     const s = state.current;
     createExplosion(s.player.x, s.player.y, 'red', 50);
+    playExplosionSound(); // Boom!
     s.player.lives--;
     if (s.player.lives > 0) {
       s.player.x = CANVAS_WIDTH / 2 - PLAYER_WIDTH / 2;
@@ -678,6 +771,7 @@ export const RiverRaidGame: React.FC = () => {
   };
 
   const createExplosion = (x: number, y: number, color: string = 'white', count: number = 10) => {
+     if (count > 20) playExplosionSound(); // Play sound for big explosions
      for(let i=0; i<count; i++) {
        state.current.particles.push({
          x, 
@@ -1056,6 +1150,7 @@ export const RiverRaidGame: React.FC = () => {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      initAudio(); // Initialize audio on key press
       const s = state.current;
       // Disable game key input when typing name
       if (s.gameState === GameState.LEADERBOARD_INPUT) {
@@ -1163,31 +1258,72 @@ export const RiverRaidGame: React.FC = () => {
         
         {/* Mobile Controls */}
         <div className="w-full max-w-[600px] grid grid-cols-3 gap-2 p-2 mt-auto select-none touch-none bg-zinc-900 border-t border-zinc-700">
-            {/* JOYSTICK Area */}
-            <div 
-                className="flex flex-col items-center justify-center h-32 relative"
-                ref={joystickContainerRef}
-                onTouchStart={handleJoystickStart}
-                onTouchMove={handleJoystickMove}
-                onTouchEnd={handleJoystickEnd}
-            >
-                <div className="w-24 h-24 bg-zinc-800 rounded-full border-2 border-zinc-600 absolute flex items-center justify-center">
-                     {/* Joystick Knob */}
-                     <div 
-                        className="w-10 h-10 bg-zinc-500 rounded-full shadow-lg border border-zinc-400"
-                        style={{
-                            transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)`,
-                            transition: isJoystickActive ? 'none' : 'transform 0.1s ease-out'
-                        }}
-                     ></div>
-                </div>
-                <div className="absolute bottom-0 text-[8px] text-zinc-500">MOVE</div>
+            
+            {/* LEFT SIDE: JOYSTICK OR BUTTONS */}
+            <div className="relative flex items-center justify-center h-32">
+                {controlMode === 'JOYSTICK' ? (
+                    <div 
+                        className="flex flex-col items-center justify-center w-full h-full"
+                        ref={joystickContainerRef}
+                        onTouchStart={handleJoystickStart}
+                        onTouchMove={handleJoystickMove}
+                        onTouchEnd={handleJoystickEnd}
+                    >
+                        <div className="w-24 h-24 bg-zinc-800 rounded-full border-2 border-zinc-600 flex items-center justify-center">
+                            <div 
+                                className="w-10 h-10 bg-zinc-500 rounded-full shadow-lg border border-zinc-400"
+                                style={{
+                                    transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)`,
+                                    transition: isJoystickActive ? 'none' : 'transform 0.1s ease-out'
+                                }}
+                            ></div>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-3 gap-1 w-24 h-24">
+                        <div></div>
+                        <button 
+                             className="bg-zinc-700 rounded active:bg-zinc-600 flex items-center justify-center text-white"
+                             onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowUp'); }}
+                             onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowUp'); }}
+                        >▲</button>
+                        <div></div>
+                        
+                        <button 
+                             className="bg-zinc-700 rounded active:bg-zinc-600 flex items-center justify-center text-white"
+                             onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowLeft'); }}
+                             onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowLeft'); }}
+                        >◄</button>
+                        <div></div>
+                        <button 
+                             className="bg-zinc-700 rounded active:bg-zinc-600 flex items-center justify-center text-white"
+                             onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowRight'); }}
+                             onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowRight'); }}
+                        >►</button>
+
+                        <div></div>
+                        <button 
+                             className="bg-zinc-700 rounded active:bg-zinc-600 flex items-center justify-center text-white"
+                             onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowDown'); }}
+                             onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowDown'); }}
+                        >▼</button>
+                        <div></div>
+                    </div>
+                )}
+                
+                {/* Mode Toggle Button (Floating in corner of this cell) */}
+                <button 
+                    onClick={() => setControlMode(prev => prev === 'JOYSTICK' ? 'BUTTONS' : 'JOYSTICK')}
+                    className="absolute bottom-0 left-0 text-[8px] bg-zinc-800 text-zinc-400 px-1 rounded border border-zinc-600 opacity-75"
+                >
+                    SWAP
+                </button>
             </div>
 
             {/* Center Area (Market / Restart) - Small Buttons */}
             <div className="flex flex-col items-center justify-center gap-2">
                  <button 
-                    className="w-3/4 py-1 bg-yellow-600 rounded text-[10px] font-bold text-white shadow shadow-yellow-900 active:bg-yellow-500 active:translate-y-0.5"
+                    className="w-full py-2 bg-yellow-600 rounded text-[10px] font-bold text-white shadow shadow-yellow-900 active:bg-yellow-500 active:translate-y-0.5"
                     onClick={() => handleTouchStart('KeyM')}
                  >
                     MARKET
@@ -1199,7 +1335,7 @@ export const RiverRaidGame: React.FC = () => {
                          {[1, 2, 3, 4].map(num => (
                              <button
                                 key={num}
-                                className="bg-blue-600 text-white text-[10px] p-1 rounded active:bg-blue-400"
+                                className="bg-blue-600 text-white text-[10px] p-2 rounded active:bg-blue-400"
                                 onClick={() => buyItem(num)}
                              >
                                  {num}
@@ -1211,7 +1347,7 @@ export const RiverRaidGame: React.FC = () => {
                  {/* Restart Button - Only visible on Game Over */}
                  {uiGameState === GameState.GAME_OVER && (
                      <button 
-                        className="w-3/4 py-1 bg-blue-600 rounded text-[10px] font-bold text-white shadow shadow-blue-900 active:bg-blue-500 active:translate-y-0.5 animate-pulse"
+                        className="w-full py-2 bg-blue-600 rounded text-[10px] font-bold text-white shadow shadow-blue-900 active:bg-blue-500 active:translate-y-0.5 animate-pulse"
                         onClick={() => handleTouchStart('KeyR')}
                      >
                         RESTART

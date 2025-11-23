@@ -266,23 +266,37 @@ export const RiverRaidGame: React.FC = () => {
     // 1. Try Supabase
     if (supabase) {
         try {
+            console.log("Attempting to load scores from Supabase...");
             const { data, error } = await supabase
                 .from('scores')
                 .select('name, score')
                 .order('score', { ascending: false })
                 .limit(MAX_LEADERBOARD_ENTRIES);
             
-            if (!error && data) {
+            if (error) {
+                // Check if error is 'relation does not exist' (Table missing)
+                if (error.code === '42P01') {
+                    console.warn("Supabase table 'scores' not found. Please run the setup SQL in Supabase Dashboard.");
+                } else {
+                    console.error("Supabase load error detail:", error.message);
+                }
+                throw error;
+            }
+            if (data) {
+                console.log("Scores loaded successfully:", data.length);
                 state.current.highScores = data;
                 setLoadingScores(false);
                 return;
             }
         } catch (err) {
-            console.error("Supabase load error:", err);
+            // Quietly fall through to local storage if DB fails
         }
+    } else {
+        console.log("Supabase client not initialized (check environment variables).");
     }
 
     // 2. Fallback to LocalStorage
+    console.log("Falling back to LocalStorage.");
     const stored = localStorage.getItem('riverRaidScores');
     if (stored) {
       state.current.highScores = JSON.parse(stored);
@@ -302,18 +316,28 @@ export const RiverRaidGame: React.FC = () => {
     // 1. Try Supabase
     if (supabase) {
         try {
+            console.log("Attempting to save score to Supabase...");
             const { error } = await supabase.from('scores').insert([{ name, score }]);
-            if (!error) {
+            if (error) {
+                if (error.code === '42P01') {
+                    console.warn("Cannot save score: Table 'scores' missing in Supabase.");
+                } else {
+                    console.error("Supabase save error detail:", error.message);
+                }
+                throw error;
+            } else {
+                console.log("Score saved successfully.");
                 await loadHighScores(); // Refresh
                 setLoadingScores(false);
                 return;
             }
         } catch (err) {
-            console.error("Supabase save error:", err);
+           // Fall through
         }
     }
 
     // 2. Fallback to LocalStorage
+    console.log("Saving to LocalStorage.");
     const s = state.current;
     s.highScores.push({ name, score });
     s.highScores.sort((a, b) => b.score - a.score);
@@ -1709,4 +1733,4 @@ export const RiverRaidGame: React.FC = () => {
         </div>
     </div>
   );
-};
+}

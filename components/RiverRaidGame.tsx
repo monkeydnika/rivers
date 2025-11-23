@@ -21,6 +21,11 @@ export const RiverRaidGame: React.FC = () => {
   const [uiGameState, setUiGameState] = useState<GameState>(GameState.START);
   const [inputValue, setInputValue] = useState("");
   
+  // Joystick State
+  const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
+  const [isJoystickActive, setIsJoystickActive] = useState(false);
+  const joystickContainerRef = useRef<HTMLDivElement>(null);
+
   const state = useRef({
     gameState: GameState.START,
     keys: {} as { [key: string]: boolean },
@@ -83,11 +88,10 @@ export const RiverRaidGame: React.FC = () => {
 
   // --- Mobile Input Helpers ---
   const handleTouchStart = (key: string) => {
-    if (state.current.gameState === GameState.LEADERBOARD_INPUT) return; // Disable game controls during input
+    if (state.current.gameState === GameState.LEADERBOARD_INPUT) return; 
 
     state.current.keys[key] = true;
     
-    // Özel durumlar (Market, Restart vb. için anlık tetiklemeler)
     if (key === 'KeyM') {
         if (state.current.gameState === GameState.PLAYING) {
             state.current.gameState = GameState.SHOP;
@@ -98,43 +102,96 @@ export const RiverRaidGame: React.FC = () => {
         }
     }
     
-    // Start Game logic for touch
     if (state.current.gameState === GameState.START && key === 'Space') {
         initGame(true);
     }
     
-    // Restart logic for touch
     if (state.current.gameState === GameState.GAME_OVER && key === 'KeyR') {
         initGame(true);
     }
 
-    // Fire logic for touch (Space)
     if (state.current.gameState === GameState.PLAYING && key === 'Space') {
-        const s = state.current;
-        if (s.player.weaponType === WeaponType.SPREAD) {
-            s.bullets.push(
-                { x: s.player.x + s.player.width / 2 - 2, y: s.player.y, width: 4, height: 10, vx: 0, vy: 10, isEnemy: false, markedForDeletion: false },
-                { x: s.player.x, y: s.player.y + 5, width: 4, height: 10, vx: -3, vy: 9, isEnemy: false, markedForDeletion: false },
-                { x: s.player.x + s.player.width, y: s.player.y + 5, width: 4, height: 10, vx: 3, vy: 9, isEnemy: false, markedForDeletion: false }
-            );
-        } else {
-            s.bullets.push({
-                x: s.player.x + s.player.width / 2 - 2,
-                y: s.player.y,
-                width: 4,
-                height: 10,
-                vx: 0,
-                vy: 10,
-                isEnemy: false,
-                markedForDeletion: false
-            });
-        }
+        fireBullet();
     }
   };
 
   const handleTouchEnd = (key: string) => {
     state.current.keys[key] = false;
   };
+
+  // Joystick Logic
+  const handleJoystickStart = (e: React.TouchEvent) => {
+    if (state.current.gameState !== GameState.PLAYING) return;
+    setIsJoystickActive(true);
+    updateJoystick(e);
+  };
+
+  const handleJoystickMove = (e: React.TouchEvent) => {
+    if (!isJoystickActive) return;
+    updateJoystick(e);
+  };
+
+  const handleJoystickEnd = () => {
+    setIsJoystickActive(false);
+    setJoystickPos({ x: 0, y: 0 });
+    state.current.keys['ArrowLeft'] = false;
+    state.current.keys['ArrowRight'] = false;
+    state.current.keys['ArrowUp'] = false;
+    state.current.keys['ArrowDown'] = false;
+  };
+
+  const updateJoystick = (e: React.TouchEvent) => {
+     if (!joystickContainerRef.current) return;
+     const touch = e.touches[0];
+     const rect = joystickContainerRef.current.getBoundingClientRect();
+     const centerX = rect.left + rect.width / 2;
+     const centerY = rect.top + rect.height / 2;
+     
+     const dx = touch.clientX - centerX;
+     const dy = touch.clientY - centerY;
+     const distance = Math.sqrt(dx*dx + dy*dy);
+     const maxRadius = rect.width / 2 - 15; // Knob radius offset
+     
+     let clampedX = dx;
+     let clampedY = dy;
+     
+     if (distance > maxRadius) {
+         const angle = Math.atan2(dy, dx);
+         clampedX = Math.cos(angle) * maxRadius;
+         clampedY = Math.sin(angle) * maxRadius;
+     }
+     
+     setJoystickPos({ x: clampedX, y: clampedY });
+
+     // Map to keys
+     const deadzone = 10;
+     state.current.keys['ArrowLeft'] = clampedX < -deadzone;
+     state.current.keys['ArrowRight'] = clampedX > deadzone;
+     state.current.keys['ArrowUp'] = clampedY < -deadzone;
+     state.current.keys['ArrowDown'] = clampedY > deadzone;
+  };
+
+  const fireBullet = () => {
+      const s = state.current;
+      if (s.player.weaponType === WeaponType.SPREAD) {
+        s.bullets.push(
+            { x: s.player.x + s.player.width / 2 - 2, y: s.player.y, width: 4, height: 10, vx: 0, vy: 10, isEnemy: false, markedForDeletion: false },
+            { x: s.player.x, y: s.player.y + 5, width: 4, height: 10, vx: -3, vy: 9, isEnemy: false, markedForDeletion: false },
+            { x: s.player.x + s.player.width, y: s.player.y + 5, width: 4, height: 10, vx: 3, vy: 9, isEnemy: false, markedForDeletion: false }
+        );
+    } else {
+        s.bullets.push({
+            x: s.player.x + s.player.width / 2 - 2,
+            y: s.player.y,
+            width: 4,
+            height: 10,
+            vx: 0,
+            vy: 10,
+            isEnemy: false,
+            markedForDeletion: false
+        });
+    }
+  }
 
   // --- Game Engine Methods ---
 
@@ -201,10 +258,12 @@ export const RiverRaidGame: React.FC = () => {
     const leftBankEnd = segmentX - width / 2;
     if (leftBankEnd > 40 && Math.random() < 0.3) {
         const type = Math.random() > 0.9 ? DecorationType.HOUSE : DecorationType.TREE;
+        const variant = Math.floor(Math.random() * 3); // 0, 1, or 2
         s.decorations.push({
             x: Math.random() * (leftBankEnd - 30),
             y: yPos,
             type: type,
+            variant: variant,
             markedForDeletion: false
         });
     }
@@ -212,10 +271,12 @@ export const RiverRaidGame: React.FC = () => {
     const rightBankStart = segmentX + width / 2;
     if (CANVAS_WIDTH - rightBankStart > 40 && Math.random() < 0.3) {
         const type = Math.random() > 0.9 ? DecorationType.HOUSE : DecorationType.TREE;
+        const variant = Math.floor(Math.random() * 3); // 0, 1, or 2
         s.decorations.push({
             x: rightBankStart + Math.random() * (CANVAS_WIDTH - rightBankStart - 30),
             y: yPos,
             type: type,
+            variant: variant,
             markedForDeletion: false
         });
     }
@@ -675,35 +736,87 @@ export const RiverRaidGame: React.FC = () => {
     s.decorations.forEach(d => {
         if (d.type === DecorationType.TREE) {
             ctx.fillStyle = '#064e3b'; // Dark Green
-            ctx.beginPath();
-            ctx.moveTo(d.x + 10, d.y);
-            ctx.lineTo(d.x + 20, d.y + 25);
-            ctx.lineTo(d.x, d.y + 25);
-            ctx.fill();
+            if (d.variant === 1) ctx.fillStyle = '#166534'; // Lighter Green for Oak
+            if (d.variant === 2) ctx.fillStyle = '#0f3925'; // Very Dark for Pine
+
+            if (d.variant === 1) {
+                // Round Tree (Oak)
+                ctx.beginPath();
+                ctx.arc(d.x + 10, d.y + 10, 12, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#3f2c22'; // Trunk
+                ctx.fillRect(d.x + 8, d.y + 20, 4, 8);
+            } else if (d.variant === 2) {
+                // Tall Skinny Pine
+                ctx.beginPath();
+                ctx.moveTo(d.x + 10, d.y - 10);
+                ctx.lineTo(d.x + 18, d.y + 25);
+                ctx.lineTo(d.x + 2, d.y + 25);
+                ctx.fill();
+            } else {
+                // Standard Tree
+                ctx.beginPath();
+                ctx.moveTo(d.x + 10, d.y);
+                ctx.lineTo(d.x + 20, d.y + 25);
+                ctx.lineTo(d.x, d.y + 25);
+                ctx.fill();
+            }
         } else if (d.type === DecorationType.HOUSE) {
-            ctx.fillStyle = '#f8fafc'; // White Walls
+            const variant = d.variant || 0;
+            
+            // House Body
+            if (variant === 1) ctx.fillStyle = '#e2e8f0'; // White
+            else if (variant === 2) ctx.fillStyle = '#78716c'; // Stone/Grey
+            else ctx.fillStyle = '#f8fafc'; // Default White
+            
             ctx.fillRect(d.x, d.y + 10, 20, 15);
-            ctx.fillStyle = '#b91c1c'; // Red Roof
+            
+            // House Roof
+            if (variant === 1) ctx.fillStyle = '#0ea5e9'; // Blue Roof
+            else if (variant === 2) ctx.fillStyle = '#44403c'; // Dark Grey Roof
+            else ctx.fillStyle = '#b91c1c'; // Red Roof
+
             ctx.beginPath();
-            ctx.moveTo(d.x + 10, d.y);
-            ctx.lineTo(d.x + 24, d.y + 10);
-            ctx.lineTo(d.x - 4, d.y + 10);
+            if (variant === 2) {
+                // Flat/Slant Roof
+                ctx.moveTo(d.x - 2, d.y + 5);
+                ctx.lineTo(d.x + 22, d.y + 10);
+                ctx.lineTo(d.x + 22, d.y + 2);
+                ctx.lineTo(d.x - 2, d.y + 2);
+            } else {
+                // Triangle Roof
+                ctx.moveTo(d.x + 10, d.y);
+                ctx.lineTo(d.x + 24, d.y + 10);
+                ctx.lineTo(d.x - 4, d.y + 10);
+            }
             ctx.fill();
+            
             // Door
             ctx.fillStyle = '#475569';
             ctx.fillRect(d.x + 8, d.y + 18, 4, 7);
         }
     });
 
+    // Dynamic Enemy Colors based on Difficulty
+    const getLevelIndex = () => Math.floor(s.difficulty - 1);
+    
     // Entities
     s.enemies.forEach(e => {
+      const lvl = getLevelIndex();
+
       if (e.type === EnemyType.SHIP) {
-        ctx.fillStyle = '#1e293b';
+        const shipColors = ['#1e293b', '#7f1d1d', '#000000', '#312e81']; // Slate, Red, Black, Indigo
+        const shipMain = shipColors[lvl % shipColors.length] || '#1e293b';
+        
+        ctx.fillStyle = shipMain;
         ctx.fillRect(e.x, e.y, e.width, e.height);
         ctx.fillStyle = '#64748b';
         ctx.fillRect(e.x + 5, e.y - 5, 10, 5);
       } else if (e.type === EnemyType.HELICOPTER) {
-        ctx.fillStyle = '#be123c';
+        const heliColors = ['#be123c', '#15803d', '#1d4ed8', '#a21caf']; // Red, Green, Blue, Magenta
+        const heliMain = heliColors[lvl % heliColors.length] || '#be123c';
+
+        ctx.fillStyle = heliMain;
         ctx.fillRect(e.x, e.y, e.width, e.height);
         ctx.fillStyle = '#000';
         ctx.fillRect(e.x - 5, e.y, e.width + 10, 2);
@@ -713,7 +826,10 @@ export const RiverRaidGame: React.FC = () => {
             ctx.fillRect(e.x, e.y - 5, e.width, 2);
         }
       } else if (e.type === EnemyType.JET) {
-        ctx.fillStyle = '#7c3aed';
+        const jetColors = ['#7c3aed', '#c2410c', '#0ea5e9', '#4d7c0f']; // Purple, Orange, Sky, Green
+        const jetMain = jetColors[lvl % jetColors.length] || '#7c3aed';
+
+        ctx.fillStyle = jetMain;
         ctx.beginPath();
         ctx.moveTo(e.x, e.y); ctx.lineTo(e.x + e.width, e.y); ctx.lineTo(e.x + e.width/2, e.y + e.height);
         ctx.fill();
@@ -813,24 +929,11 @@ export const RiverRaidGame: React.FC = () => {
       ctx.fillRect(p.x, p.y, p.size, p.size);
     });
 
-    // UI - Stats
-    ctx.fillStyle = '#fff';
-    ctx.font = '16px "Press Start 2P", cursive';
-    ctx.fillText(`SCORE:${s.player.score}`, 10, 30);
-    ctx.fillText(`LIVES:${s.player.lives}`, CANVAS_WIDTH - 140, 30);
-    
-    ctx.fillStyle = '#facc15';
-    ctx.fillText(`GOLD:${s.player.gold}`, 10, 55);
-
-    ctx.font = '10px "Press Start 2P"';
-    ctx.fillStyle = '#94a3b8';
-    ctx.fillText(`LVL:${s.difficulty.toFixed(1)}`, 10, 75);
-
-    // Fuel Bar
-    const barWidth = 180;
-    const barHeight = 15;
-    const barX = CANVAS_WIDTH / 2 - barWidth / 2;
-    const barY = CANVAS_HEIGHT - 25;
+    // UI - Fuel Bar (Moved to Top)
+    const barWidth = CANVAS_WIDTH - 40;
+    const barHeight = 10;
+    const barX = 20;
+    const barY = 10; // Very Top
     
     ctx.fillStyle = '#333';
     ctx.fillRect(barX, barY, barWidth, barHeight);
@@ -842,8 +945,25 @@ export const RiverRaidGame: React.FC = () => {
     ctx.fillRect(barX + 2, barY + 2, (barWidth - 4) * fuelPct, barHeight - 4);
     
     ctx.fillStyle = '#fff';
-    ctx.font = '10px "Press Start 2P"';
-    ctx.fillText("FUEL", barX + barWidth / 2 - 15, barY + 11);
+    ctx.font = '8px "Press Start 2P"';
+    ctx.textAlign = 'center';
+    ctx.fillText("FUEL", CANVAS_WIDTH/2, barY + 8);
+    ctx.textAlign = 'left';
+
+    // UI - Stats (Below Fuel Bar)
+    ctx.fillStyle = '#fff';
+    ctx.font = '12px "Press Start 2P"';
+    ctx.fillText(`SCORE:${s.player.score}`, 20, 40);
+    ctx.textAlign = 'right';
+    ctx.fillText(`LIVES:${s.player.lives}`, CANVAS_WIDTH - 20, 40);
+    ctx.textAlign = 'left';
+    
+    ctx.fillStyle = '#facc15';
+    ctx.fillText(`GOLD:${s.player.gold}`, 20, 60);
+    ctx.fillStyle = '#94a3b8';
+    ctx.textAlign = 'right';
+    ctx.fillText(`LVL:${s.difficulty.toFixed(1)}`, CANVAS_WIDTH - 20, 60);
+    ctx.textAlign = 'left';
 
     // --- Screens ---
     if (s.gameState === GameState.SHOP) {
@@ -967,24 +1087,7 @@ export const RiverRaidGame: React.FC = () => {
           if (e.key === '4') buyItem(4);
       }
       else if (s.gameState === GameState.PLAYING && e.code === 'Space') {
-        if (s.player.weaponType === WeaponType.SPREAD) {
-            s.bullets.push(
-                { x: s.player.x + s.player.width / 2 - 2, y: s.player.y, width: 4, height: 10, vx: 0, vy: 10, isEnemy: false, markedForDeletion: false },
-                { x: s.player.x, y: s.player.y + 5, width: 4, height: 10, vx: -3, vy: 9, isEnemy: false, markedForDeletion: false },
-                { x: s.player.x + s.player.width, y: s.player.y + 5, width: 4, height: 10, vx: 3, vy: 9, isEnemy: false, markedForDeletion: false }
-            );
-        } else {
-            s.bullets.push({
-                x: s.player.x + s.player.width / 2 - 2,
-                y: s.player.y,
-                width: 4,
-                height: 10,
-                vx: 0,
-                vy: 10,
-                isEnemy: false,
-                markedForDeletion: false
-            });
-        }
+        fireBullet();
       }
     };
 
@@ -1060,44 +1163,31 @@ export const RiverRaidGame: React.FC = () => {
         
         {/* Mobile Controls */}
         <div className="w-full max-w-[600px] grid grid-cols-3 gap-2 p-2 mt-auto select-none touch-none bg-zinc-900 border-t border-zinc-700">
-            {/* D-PAD Area */}
-            <div className="flex flex-col items-center gap-1 justify-center">
-                <button 
-                    className="w-10 h-10 md:w-12 md:h-12 bg-zinc-700 rounded active:bg-zinc-500 text-xl flex items-center justify-center border-2 border-zinc-600 shadow-md"
-                    onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowUp'); }}
-                    onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowUp'); }}
-                >
-                    ⬆️
-                </button>
-                <div className="flex gap-1">
-                    <button 
-                        className="w-10 h-10 md:w-12 md:h-12 bg-zinc-700 rounded active:bg-zinc-500 text-xl flex items-center justify-center border-2 border-zinc-600 shadow-md"
-                        onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowLeft'); }}
-                        onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowLeft'); }}
-                    >
-                        ⬅️
-                    </button>
-                    <button 
-                        className="w-10 h-10 md:w-12 md:h-12 bg-zinc-700 rounded active:bg-zinc-500 text-xl flex items-center justify-center border-2 border-zinc-600 shadow-md"
-                        onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowDown'); }}
-                        onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowDown'); }}
-                    >
-                        ⬇️
-                    </button>
-                    <button 
-                        className="w-10 h-10 md:w-12 md:h-12 bg-zinc-700 rounded active:bg-zinc-500 text-xl flex items-center justify-center border-2 border-zinc-600 shadow-md"
-                        onTouchStart={(e) => { e.preventDefault(); handleTouchStart('ArrowRight'); }}
-                        onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('ArrowRight'); }}
-                    >
-                        ➡️
-                    </button>
+            {/* JOYSTICK Area */}
+            <div 
+                className="flex flex-col items-center justify-center h-32 relative"
+                ref={joystickContainerRef}
+                onTouchStart={handleJoystickStart}
+                onTouchMove={handleJoystickMove}
+                onTouchEnd={handleJoystickEnd}
+            >
+                <div className="w-24 h-24 bg-zinc-800 rounded-full border-2 border-zinc-600 absolute flex items-center justify-center">
+                     {/* Joystick Knob */}
+                     <div 
+                        className="w-10 h-10 bg-zinc-500 rounded-full shadow-lg border border-zinc-400"
+                        style={{
+                            transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)`,
+                            transition: isJoystickActive ? 'none' : 'transform 0.1s ease-out'
+                        }}
+                     ></div>
                 </div>
+                <div className="absolute bottom-0 text-[8px] text-zinc-500">MOVE</div>
             </div>
 
-            {/* Center Area (Market / Restart) */}
+            {/* Center Area (Market / Restart) - Small Buttons */}
             <div className="flex flex-col items-center justify-center gap-2">
                  <button 
-                    className="w-full py-2 bg-yellow-600 rounded text-[10px] md:text-xs font-bold text-white shadow-lg active:bg-yellow-500 border-b-4 border-yellow-800 active:border-b-0 active:translate-y-1"
+                    className="w-3/4 py-1 bg-yellow-600 rounded text-[10px] font-bold text-white shadow shadow-yellow-900 active:bg-yellow-500 active:translate-y-0.5"
                     onClick={() => handleTouchStart('KeyM')}
                  >
                     MARKET
@@ -1109,7 +1199,7 @@ export const RiverRaidGame: React.FC = () => {
                          {[1, 2, 3, 4].map(num => (
                              <button
                                 key={num}
-                                className="bg-blue-600 text-white text-[10px] p-2 rounded active:bg-blue-400"
+                                className="bg-blue-600 text-white text-[10px] p-1 rounded active:bg-blue-400"
                                 onClick={() => buyItem(num)}
                              >
                                  {num}
@@ -1121,7 +1211,7 @@ export const RiverRaidGame: React.FC = () => {
                  {/* Restart Button - Only visible on Game Over */}
                  {uiGameState === GameState.GAME_OVER && (
                      <button 
-                        className="w-full py-2 bg-blue-600 rounded text-[10px] md:text-xs font-bold text-white shadow-lg active:bg-blue-500 animate-pulse"
+                        className="w-3/4 py-1 bg-blue-600 rounded text-[10px] font-bold text-white shadow shadow-blue-900 active:bg-blue-500 active:translate-y-0.5 animate-pulse"
                         onClick={() => handleTouchStart('KeyR')}
                      >
                         RESTART
@@ -1130,13 +1220,13 @@ export const RiverRaidGame: React.FC = () => {
             </div>
 
             {/* Action Area */}
-            <div className="flex items-center justify-center">
+            <div className="flex items-center justify-center h-32">
                  <button 
-                    className="w-16 h-16 md:w-20 md:h-20 rounded-full bg-red-600 border-4 border-red-800 shadow-lg active:bg-red-500 active:scale-95 flex items-center justify-center"
+                    className="w-20 h-20 md:w-24 md:h-24 rounded-full bg-red-600 border-4 border-red-800 shadow-lg active:bg-red-500 active:scale-95 flex items-center justify-center"
                     onTouchStart={(e) => { e.preventDefault(); handleTouchStart('Space'); }}
                     onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('Space'); }}
                 >
-                    <div className="text-white font-bold text-[10px] md:text-xs">FIRE</div>
+                    <div className="text-white font-bold text-xs md:text-sm">FIRE</div>
                 </button>
             </div>
         </div>

@@ -90,5 +90,6 @@ export interface Decoration {
   x: number;
   y: number;
   type: DecorationType;
+  variant: number; // Added variant for visual diversity
   markedForDeletion: boolean;
 }

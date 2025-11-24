@@ -26,16 +26,8 @@ export const RiverRaidGame: React.FC = () => {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [saveStatus, setSaveStatus] = useState<string>(""); 
   
-  // Debug / Setup State
-  const [showSqlModal, setShowSqlModal] = useState(false);
-
   // Input Controls State
-  const [controlMode, setControlMode] = useState<'JOYSTICK' | 'BUTTONS'>('BUTTONS');
-
-  // Joystick State
-  const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
-  const [isJoystickActive, setIsJoystickActive] = useState(false);
-  const joystickContainerRef = useRef<HTMLDivElement>(null);
+  const [controlMode, setControlMode] = useState<'TOUCH' | 'KEYBOARD'>('KEYBOARD');
 
   // Audio Context
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -75,20 +67,18 @@ export const RiverRaidGame: React.FC = () => {
     level: 1,
     lastBridgePos: 0,
     isBossActive: false,
-    joystickVector: { x: 0, y: 0 },
     lastShotTime: 0
   });
 
   // --- Initialization & IP Fetch ---
   useEffect(() => {
-    // 1. Simple IP Fetch (Non-blocking)
+    // 1. Simple IP Fetch (Non-blocking, Hidden from UI)
     fetch('https://api.ipify.org?format=json')
         .then(res => res.json())
         .then(data => { 
             userIpRef.current = data.ip; 
-            console.log("IP Cached:", data.ip);
         })
-        .catch(err => console.log("IP fetch failed (adblocker likely), continuing without IP."));
+        .catch(() => { /* Silent fail */ });
 
     // 2. Init Audio on interaction
     const initAudio = () => {
@@ -176,6 +166,12 @@ export const RiverRaidGame: React.FC = () => {
     };
   }, [uiGameState]);
 
+  // --- Touch Button Handler ---
+  const handleTouchBtn = (code: string, isPressed: boolean, e: React.TouchEvent | React.MouseEvent) => {
+      if (e.cancelable) e.preventDefault(); // Prevent scrolling
+      state.current.keys[code] = isPressed;
+  };
+
   // --- Game Loop ---
   const startGame = () => {
     state.current = {
@@ -209,7 +205,6 @@ export const RiverRaidGame: React.FC = () => {
       level: 1,
       lastBridgePos: 0,
       isBossActive: false,
-      joystickVector: { x: 0, y: 0 },
       lastShotTime: 0
     };
 
@@ -334,29 +329,23 @@ export const RiverRaidGame: React.FC = () => {
     const keys = s.keys;
     let dx = 0;
 
-    // Keyboard
+    // Keyboard / Touch Button movement
     if (keys['ArrowLeft']) dx = -5;
     if (keys['ArrowRight']) dx = 5;
     
-    // Joystick
-    if (isJoystickActive) {
-        dx = s.joystickVector.x * 6; 
-        if (s.joystickVector.y < -0.3) s.scrollSpeed = Math.min(s.scrollSpeed + 0.1, BASE_SCROLL_SPEED * 2.5);
-        if (s.joystickVector.y > 0.3) s.scrollSpeed = Math.max(s.scrollSpeed - 0.1, BASE_SCROLL_SPEED * 0.5);
-    } else {
-        if (keys['ArrowUp']) s.scrollSpeed = Math.min(s.scrollSpeed + 0.1, BASE_SCROLL_SPEED * 2.5);
-        else if (keys['ArrowDown']) s.scrollSpeed = Math.max(s.scrollSpeed - 0.1, BASE_SCROLL_SPEED * 0.5);
-        else {
-             if (s.scrollSpeed > BASE_SCROLL_SPEED) s.scrollSpeed -= 0.05;
-             if (s.scrollSpeed < BASE_SCROLL_SPEED) s.scrollSpeed += 0.05;
-        }
+    // Speed Control
+    if (keys['ArrowUp']) s.scrollSpeed = Math.min(s.scrollSpeed + 0.1, BASE_SCROLL_SPEED * 2.5);
+    else if (keys['ArrowDown']) s.scrollSpeed = Math.max(s.scrollSpeed - 0.1, BASE_SCROLL_SPEED * 0.5);
+    else {
+            if (s.scrollSpeed > BASE_SCROLL_SPEED) s.scrollSpeed -= 0.05;
+            if (s.scrollSpeed < BASE_SCROLL_SPEED) s.scrollSpeed += 0.05;
     }
 
     s.player.x += dx;
 
     // Shooting
     const now = Date.now();
-    if ((keys['Space'] || keys['KeyZ'] || isJoystickActive) && now - s.lastShotTime > 200) { 
+    if ((keys['Space'] || keys['KeyZ']) && now - s.lastShotTime > 200) { 
        s.bullets.push({
            x: s.player.x + PLAYER_WIDTH / 2 - 4,
            y: s.player.y,
@@ -648,17 +637,12 @@ export const RiverRaidGame: React.FC = () => {
     const { error } = await supabase.from('scores').insert([{
         name: inputValue.trim(),
         score: state.current.player.score,
-        ip_address: userIpRef.current // Include IP
+        ip_address: userIpRef.current // IP is still sent securely
     }]);
 
     if (error) {
         console.error("Supabase insert error:", error);
-        if (error.code === "42P01") {
-            setShowSqlModal(true);
-            setSaveStatus("Table Missing!");
-        } else {
-            setSaveStatus("Error Saving");
-        }
+        setSaveStatus("Error Saving");
     } else {
         setSaveStatus("Saved!");
         setUiGameState(GameState.LEADERBOARD_INPUT); 
@@ -666,128 +650,9 @@ export const RiverRaidGame: React.FC = () => {
     }
   };
 
-  // --- Joystick Events ---
-  const handleTouchStart = (e: React.TouchEvent) => {
-      if (uiGameState !== GameState.PLAYING || controlMode !== 'JOYSTICK') return;
-      const touch = e.touches[0];
-      const rect = joystickContainerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      
-      const centerX = rect.left + rect.width / 2;
-      const centerY = rect.top + rect.height / 2;
-      
-      const x = touch.clientX - centerX;
-      const y = touch.clientY - centerY;
-      
-      setIsJoystickActive(true);
-      updateJoystick(x, y, rect.width/2);
-  };
-  const handleTouchMove = (e: React.TouchEvent) => {
-      if (!isJoystickActive) return;
-      const touch = e.touches[0];
-      const rect = joystickContainerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      
-      const centerX = rect.left + rect.width / 2;
-      const centerY = rect.top + rect.height / 2;
-      const x = touch.clientX - centerX;
-      const y = touch.clientY - centerY;
-      
-      updateJoystick(x, y, rect.width/2);
-  };
-  const handleTouchEnd = () => {
-      setIsJoystickActive(false);
-      setJoystickPos({ x: 0, y: 0 });
-      state.current.joystickVector = { x: 0, y: 0 };
-  };
-  const updateJoystick = (x: number, y: number, radius: number) => {
-      const distance = Math.sqrt(x*x + y*y);
-      const maxDist = radius - 20;
-      
-      let normX = x;
-      let normY = y;
-      
-      if (distance > maxDist) {
-          normX = (x / distance) * maxDist;
-          normY = (y / distance) * maxDist;
-      }
-      
-      setJoystickPos({ x: normX, y: normY });
-      state.current.joystickVector = {
-          x: normX / maxDist,
-          y: normY / maxDist
-      };
-  };
-
-  // --- Setup / Fix DB UI ---
-  const SqlSetupModal = () => (
-    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4">
-        <div className="bg-zinc-900 border-2 border-yellow-500 p-6 max-w-2xl w-full text-xs md:text-sm font-mono overflow-y-auto max-h-[90vh] shadow-[0_0_20px_rgba(234,179,8,0.3)]">
-            <div className="flex justify-between items-center mb-4 border-b border-zinc-700 pb-2">
-                <h3 className="text-yellow-400 text-lg">⚠️ Veritabanı Kurulumu</h3>
-                <button onClick={() => setShowSqlModal(false)} className="text-red-400 hover:text-red-300">✖ KAPAT</button>
-            </div>
-            
-            <p className="mb-4 text-zinc-300 leading-relaxed">
-                Görünüşe göre Supabase'de <strong>"scores"</strong> tablosu eksik veya hatalı.
-            </p>
-
-            <ol className="list-decimal pl-5 space-y-3 text-zinc-400 mb-6">
-                <li><span className="text-white">Supabase Paneli</span>'ne gidin.</li>
-                <li>Sol menüden <span className="text-white">SQL Editor</span> simgesine tıklayın.</li>
-                <li><span className="text-white">New Query</span> butonuna basın.</li>
-                <li>Aşağıdaki kodu kopyalayıp yapıştırın ve <span className="text-green-400 font-bold">RUN</span> tuşuna basın.</li>
-            </ol>
-
-            <div className="bg-black border border-zinc-700 p-4 rounded relative group">
-                <code className="block text-green-400 whitespace-pre-wrap break-all text-[10px] md:text-xs">
-{`-- 1. Tabloyu Oluştur (Eğer yoksa)
-create table if not exists scores (
-  id bigint generated by default as identity primary key,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-  name text not null,
-  score bigint not null,
-  ip_address text -- Yeni eklenen sütun
-);
-
--- 2. Güvenlik Ayarları
-alter table scores enable row level security;
-
-create policy "Enable read access for all users"
-on scores for select to anon using (true);
-
-create policy "Enable insert access for all users"
-on scores for insert to anon with check (true);
-
--- 3. Eğer tablo zaten varsa ama 'ip_address' yoksa:
-alter table scores add column if not exists ip_address text;`}
-                </code>
-                <button 
-                    onClick={() => navigator.clipboard.writeText(`create table if not exists scores ( id bigint generated by default as identity primary key, created_at timestamp with time zone default timezone('utc'::text, now()) not null, name text not null, score bigint not null, ip_address text ); alter table scores enable row level security; create policy "Enable read access for all users" on scores for select to anon using (true); create policy "Enable insert access for all users" on scores for insert to anon with check (true); alter table scores add column if not exists ip_address text;`)}
-                    className="absolute top-2 right-2 bg-zinc-800 hover:bg-zinc-700 text-white px-2 py-1 text-xs rounded border border-zinc-600 transition-colors"
-                >
-                    KOPYALA
-                </button>
-            </div>
-            
-            <div className="mt-6 text-center">
-                <p className="text-zinc-500 mb-2">Kodu çalıştırdıktan sonra:</p>
-                <button 
-                    onClick={() => { setShowSqlModal(false); window.location.reload(); }}
-                    className="bg-yellow-600 hover:bg-yellow-500 text-black font-bold py-2 px-6 rounded transition-transform active:scale-95"
-                >
-                    SAYFAYI YENİLE
-                </button>
-            </div>
-        </div>
-    </div>
-  );
-
   // --- Render ---
   return (
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
-      {showSqlModal && <SqlSetupModal />}
-      
       <canvas
         ref={canvasRef}
         width={CANVAS_WIDTH}
@@ -805,21 +670,8 @@ alter table scores add column if not exists ip_address text;`}
             START MISSION
           </button>
           <div className="flex gap-4 mt-4">
-             <button onClick={() => setControlMode('BUTTONS')} className={`px-3 py-1 text-xs ${controlMode==='BUTTONS' ? 'bg-zinc-600 text-white':'bg-zinc-900 text-zinc-500'}`}>KEYS</button>
-             <button onClick={() => setControlMode('JOYSTICK')} className={`px-3 py-1 text-xs ${controlMode==='JOYSTICK' ? 'bg-zinc-600 text-white':'bg-zinc-900 text-zinc-500'}`}>TOUCH</button>
-          </div>
-          
-          {/* Manual Trigger for Setup */}
-          <button 
-             onClick={() => setShowSqlModal(true)}
-             className="mt-8 text-[10px] text-zinc-600 hover:text-zinc-400 underline"
-          >
-             Veritabanı Kurulumu
-          </button>
-
-          {/* Simple IP Display */}
-          <div className="absolute bottom-2 right-2 text-[8px] text-zinc-700 font-mono">
-             IP: {userIpRef.current || "Scanning..."}
+             <button onClick={() => setControlMode('KEYBOARD')} className={`px-3 py-1 text-xs ${controlMode==='KEYBOARD' ? 'bg-zinc-600 text-white':'bg-zinc-900 text-zinc-500'}`}>KEYS</button>
+             <button onClick={() => setControlMode('TOUCH')} className={`px-3 py-1 text-xs ${controlMode==='TOUCH' ? 'bg-zinc-600 text-white':'bg-zinc-900 text-zinc-500'}`}>TOUCH</button>
           </div>
         </div>
       )}
@@ -853,10 +705,6 @@ alter table scores add column if not exists ip_address text;`}
           >
             TRY AGAIN
           </button>
-          
-          <div className="mt-4 text-[10px] text-zinc-500">
-             {userIpRef.current ? `Logged as: ${userIpRef.current}` : "IP Hidden (AdBlock)"}
-          </div>
         </div>
       )}
 
@@ -894,23 +742,65 @@ alter table scores add column if not exists ip_address text;`}
          </div>
       )}
 
-      {controlMode === 'JOYSTICK' && uiGameState === GameState.PLAYING && (
-          <div 
-            ref={joystickContainerRef}
-            className="absolute bottom-8 left-1/2 -translate-x-1/2 w-32 h-32 bg-white/10 rounded-full border-2 border-white/30 touch-none"
-            onTouchStart={handleTouchStart}
-            onTouchMove={handleTouchMove}
-            onTouchEnd={handleTouchEnd}
-          >
-              <div 
-                className="absolute w-12 h-12 bg-red-500/80 rounded-full shadow-lg pointer-events-none"
-                style={{
-                    left: '50%',
-                    top: '50%',
-                    transform: `translate(calc(-50% + ${joystickPos.x}px), calc(-50% + ${joystickPos.y}px))`
-                }}
-              />
-          </div>
+      {controlMode === 'TOUCH' && uiGameState === GameState.PLAYING && (
+          <>
+            {/* Directional Buttons (D-Pad) */}
+            <div className="absolute bottom-4 left-4 grid grid-cols-3 gap-2 z-30 opacity-70 scale-90 origin-bottom-left md:scale-100">
+                 {/* UP (Accelerate) */}
+                <div className="col-start-2">
+                     <button 
+                        className="w-14 h-14 bg-zinc-800 border-2 border-zinc-500 rounded-t-xl active:bg-zinc-600 active:border-yellow-400 flex items-center justify-center text-2xl select-none"
+                        onTouchStart={(e) => handleTouchBtn('ArrowUp', true, e)}
+                        onTouchEnd={(e) => handleTouchBtn('ArrowUp', false, e)}
+                        onMouseDown={(e) => handleTouchBtn('ArrowUp', true, e)}
+                        onMouseUp={(e) => handleTouchBtn('ArrowUp', false, e)}
+                     >▲</button>
+                </div>
+                {/* LEFT */}
+                <div className="col-start-1 row-start-2">
+                     <button 
+                        className="w-14 h-14 bg-zinc-800 border-2 border-zinc-500 rounded-l-xl active:bg-zinc-600 active:border-yellow-400 flex items-center justify-center text-2xl select-none"
+                        onTouchStart={(e) => handleTouchBtn('ArrowLeft', true, e)}
+                        onTouchEnd={(e) => handleTouchBtn('ArrowLeft', false, e)}
+                        onMouseDown={(e) => handleTouchBtn('ArrowLeft', true, e)}
+                        onMouseUp={(e) => handleTouchBtn('ArrowLeft', false, e)}
+                     >◀</button>
+                </div>
+                {/* RIGHT */}
+                <div className="col-start-3 row-start-2">
+                     <button 
+                        className="w-14 h-14 bg-zinc-800 border-2 border-zinc-500 rounded-r-xl active:bg-zinc-600 active:border-yellow-400 flex items-center justify-center text-2xl select-none"
+                        onTouchStart={(e) => handleTouchBtn('ArrowRight', true, e)}
+                        onTouchEnd={(e) => handleTouchBtn('ArrowRight', false, e)}
+                        onMouseDown={(e) => handleTouchBtn('ArrowRight', true, e)}
+                        onMouseUp={(e) => handleTouchBtn('ArrowRight', false, e)}
+                     >▶</button>
+                </div>
+                {/* DOWN (Decelerate) */}
+                <div className="col-start-2 row-start-3">
+                     <button 
+                        className="w-14 h-14 bg-zinc-800 border-2 border-zinc-500 rounded-b-xl active:bg-zinc-600 active:border-yellow-400 flex items-center justify-center text-2xl select-none"
+                        onTouchStart={(e) => handleTouchBtn('ArrowDown', true, e)}
+                        onTouchEnd={(e) => handleTouchBtn('ArrowDown', false, e)}
+                        onMouseDown={(e) => handleTouchBtn('ArrowDown', true, e)}
+                        onMouseUp={(e) => handleTouchBtn('ArrowDown', false, e)}
+                     >▼</button>
+                </div>
+            </div>
+
+            {/* Fire Button */}
+            <div className="absolute bottom-6 right-6 z-30 opacity-70 scale-90 origin-bottom-right md:scale-100">
+                 <button 
+                    className="w-20 h-20 bg-red-700/90 border-4 border-red-900 rounded-full active:bg-red-500 active:scale-95 shadow-xl flex items-center justify-center font-black text-white tracking-tighter select-none"
+                    onTouchStart={(e) => handleTouchBtn('Space', true, e)}
+                    onTouchEnd={(e) => handleTouchBtn('Space', false, e)}
+                    onMouseDown={(e) => handleTouchBtn('Space', true, e)}
+                    onMouseUp={(e) => handleTouchBtn('Space', false, e)}
+                 >
+                    FIRE
+                 </button>
+            </div>
+          </>
       )}
     </div>
   );

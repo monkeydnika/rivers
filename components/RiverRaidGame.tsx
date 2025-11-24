@@ -40,7 +40,7 @@ export const RiverRaidGame: React.FC = () => {
   // Audio Context
   const audioCtxRef = useRef<AudioContext | null>(null);
 
-  // User IP Cache
+  // User IP Cache (Simple)
   const userIpRef = useRef<string | null>(null);
 
   // Game State Reference (Mutable for performance)
@@ -79,24 +79,18 @@ export const RiverRaidGame: React.FC = () => {
     lastShotTime: 0
   });
 
-  // --- Simple IP Fetching ---
+  // --- Initialization & IP Fetch ---
   useEffect(() => {
-    const getIp = async () => {
-        try {
-            const response = await fetch('https://api.ipify.org?format=json');
-            if (response.ok) {
-                const data = await response.json();
-                userIpRef.current = data.ip;
-                console.log("IP Detected:", data.ip);
-            }
-        } catch (error) {
-            console.error("IP Fetch error:", error);
-            // Fail silently, game continues
-        }
-    };
-    getIp();
+    // 1. Simple IP Fetch (Non-blocking)
+    fetch('https://api.ipify.org?format=json')
+        .then(res => res.json())
+        .then(data => { 
+            userIpRef.current = data.ip; 
+            console.log("IP Cached:", data.ip);
+        })
+        .catch(err => console.log("IP fetch failed (adblocker likely), continuing without IP."));
 
-    // Init Audio on interaction
+    // 2. Init Audio on interaction
     const initAudio = () => {
         if (!audioCtxRef.current) {
             audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -106,6 +100,7 @@ export const RiverRaidGame: React.FC = () => {
     window.addEventListener('keydown', initAudio, { once: true });
     window.addEventListener('touchstart', initAudio, { once: true });
 
+    // 3. Cleanup on unmount
     return () => {
         if (requestRef.current) cancelAnimationFrame(requestRef.current);
         if (audioCtxRef.current) audioCtxRef.current.close();
@@ -222,6 +217,7 @@ export const RiverRaidGame: React.FC = () => {
     setSaveStatus("");
     
     // Initial river generation
+    state.current.riverSegments = []; 
     for (let i = 0; i < CANVAS_HEIGHT / RIVER_SEGMENT_HEIGHT + 5; i++) {
         generateRiverSegment(CANVAS_HEIGHT - i * RIVER_SEGMENT_HEIGHT);
     }
@@ -485,466 +481,437 @@ export const RiverRaidGame: React.FC = () => {
         if (p.life <= 0) p.markedForDeletion = true;
     });
 
-    s.bullets = s.bullets.filter(b => !b.markedForDeletion);
+    // Cleanup
     s.enemies = s.enemies.filter(e => !e.markedForDeletion);
+    s.bullets = s.bullets.filter(b => !b.markedForDeletion);
     s.particles = s.particles.filter(p => !p.markedForDeletion);
+  };
 
-    if (s.frameCount % 60 === 0) s.player.score += 10;
+  const checkCollision = (rect1: any, rect2: any) => {
+    return (
+        rect1.x < rect2.x + rect2.width &&
+        rect1.x + rect1.width > rect2.x &&
+        rect1.y < rect2.y + rect2.height &&
+        rect1.y + rect1.height > rect2.y
+    );
   };
 
   const killPlayer = (reason: string) => {
-      console.log("Dead:", reason);
-      const s = state.current;
-      createExplosion(s.player.x, s.player.y, 'yellow', 50);
-      s.player.lives--;
-      
-      if (s.player.lives > 0) {
-          const seg = s.riverSegments.find(seg => seg.y > CANVAS_HEIGHT - 200 && seg.y < CANVAS_HEIGHT - 100) || s.riverSegments[0];
-          s.player.x = seg.centerX - PLAYER_WIDTH/2;
-          s.player.y = CANVAS_HEIGHT - 120;
-          s.player.vx = 0;
-          s.player.fuel = MAX_FUEL;
-      } else {
-          setUiGameState(GameState.GAME_OVER);
-      }
+      console.log("Game Over:", reason);
+      state.current.gameState = GameState.GAME_OVER;
+      setUiGameState(GameState.GAME_OVER);
+      cancelAnimationFrame(requestRef.current);
   };
 
-  const checkCollision = (r1: any, r2: any) => {
-      return (r1.x < r2.x + r2.width &&
-              r1.x + r1.width > r2.x &&
-              r1.y < r2.y + r2.height &&
-              r1.y + r1.height > r2.y);
-  };
-
-  const draw = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const s = state.current;
-
-    ctx.fillStyle = '#0066cc';
+  const draw = (ctx: CanvasRenderingContext2D) => {
+    // Clear
+    ctx.fillStyle = '#228B22'; // Grass color
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    ctx.fillStyle = '#228822';
-    s.riverSegments.forEach(seg => {
-        const leftBankW = seg.centerX - seg.width/2;
-        const rightBankX = seg.centerX + seg.width/2;
-        ctx.fillRect(0, seg.y, leftBankW, RIVER_SEGMENT_HEIGHT + 1); 
-        ctx.fillRect(rightBankX, seg.y, CANVAS_WIDTH - rightBankX, RIVER_SEGMENT_HEIGHT + 1);
-        ctx.fillStyle = '#888888';
-        ctx.fillRect(leftBankW - 4, seg.y, 4, RIVER_SEGMENT_HEIGHT + 1);
-        ctx.fillRect(rightBankX, seg.y, 4, RIVER_SEGMENT_HEIGHT + 1);
-        ctx.fillStyle = '#228822';
-    });
+    const s = state.current;
 
+    // River
+    ctx.fillStyle = '#4169E1';
+    ctx.beginPath();
+    if (s.riverSegments.length > 0) {
+        ctx.moveTo(s.riverSegments[0].centerX - s.riverSegments[0].width / 2, s.riverSegments[0].y);
+        // Left bank
+        for (const seg of s.riverSegments) {
+            ctx.lineTo(seg.centerX - seg.width / 2, seg.y);
+        }
+        // Right bank (reverse)
+        for (let i = s.riverSegments.length - 1; i >= 0; i--) {
+            const seg = s.riverSegments[i];
+            ctx.lineTo(seg.centerX + seg.width / 2, seg.y);
+        }
+    }
+    ctx.fill();
+
+    // Decorations
     s.decorations.forEach(d => {
-        ctx.fillStyle = d.type === DecorationType.TREE ? '#004400' : '#884400';
         if (d.type === DecorationType.TREE) {
+            ctx.fillStyle = '#006400';
             ctx.beginPath();
-            ctx.moveTo(d.x, d.y + 16);
-            ctx.lineTo(d.x + 8, d.y);
-            ctx.lineTo(d.x + 16, d.y + 16);
+            ctx.arc(d.x, d.y, 10, 0, Math.PI * 2);
             ctx.fill();
         } else {
-             ctx.fillRect(d.x, d.y, 16, 12);
-             ctx.fillStyle = '#aa0000'; 
-             ctx.beginPath();
-             ctx.moveTo(d.x - 2, d.y);
-             ctx.lineTo(d.x + 8, d.y - 6);
-             ctx.lineTo(d.x + 18, d.y);
-             ctx.fill();
+             ctx.fillStyle = '#8B4513';
+             ctx.fillRect(d.x - 8, d.y - 8, 16, 16);
         }
     });
 
-    s.enemies.filter(e => e.type === EnemyType.BRIDGE).forEach(b => {
-        ctx.fillStyle = '#555';
-        ctx.fillRect(0, b.y, CANVAS_WIDTH, b.height);
-        ctx.fillStyle = '#000';
-        ctx.font = '10px monospace';
-        ctx.fillText("BRIDGE", b.x + 10, b.y + 20);
-    });
+    // Player
+    ctx.fillStyle = 'yellow';
+    // Simple jet shape
+    ctx.beginPath();
+    ctx.moveTo(s.player.x + s.player.width/2, s.player.y);
+    ctx.lineTo(s.player.x + s.player.width, s.player.y + s.player.height);
+    ctx.lineTo(s.player.x + s.player.width/2, s.player.y + s.player.height - 10);
+    ctx.lineTo(s.player.x, s.player.y + s.player.height);
+    ctx.closePath();
+    ctx.fill();
 
+    // Enemies
     s.enemies.forEach(e => {
-        if (e.type === EnemyType.BRIDGE) return;
-        ctx.save();
-        ctx.translate(e.x + e.width/2, e.y + e.height/2);
-        
-        if (e.type === EnemyType.SHIP) {
-            ctx.fillStyle = '#444';
-            ctx.fillRect(-e.width/2, -e.height/2, e.width, e.height);
-            ctx.fillStyle = '#888';
-            ctx.fillRect(-e.width/4, -e.height/2 + 4, e.width/2, e.height - 8);
-        } else if (e.type === EnemyType.HELICOPTER) {
-            ctx.fillStyle = '#aa44aa';
+        if (e.type === EnemyType.SHIP) ctx.fillStyle = 'white';
+        else if (e.type === EnemyType.HELICOPTER) ctx.fillStyle = 'black';
+        else if (e.type === EnemyType.JET) ctx.fillStyle = 'red';
+        else if (e.type === EnemyType.FUEL_DEPOT) ctx.fillStyle = '#FF4500';
+        else if (e.type === EnemyType.BRIDGE) ctx.fillStyle = '#333';
+        else if (e.type === EnemyType.GOLD_COIN) ctx.fillStyle = 'gold';
+
+        if (e.type === EnemyType.GOLD_COIN) {
             ctx.beginPath();
-            ctx.arc(0, 0, e.width/2, 0, Math.PI * 2);
+            ctx.arc(e.x + e.width/2, e.y + e.height/2, 10, 0, Math.PI * 2);
             ctx.fill();
-            ctx.fillStyle = '#fff';
-            ctx.fillRect(-e.width, -2, e.width*2, 4);
-            ctx.fillRect(-2, -e.width, 4, e.width*2);
-        } else if (e.type === EnemyType.JET) {
-             ctx.fillStyle = '#white';
-             ctx.beginPath();
-             ctx.moveTo(0, -e.height/2);
-             ctx.lineTo(e.width/2, e.height/2);
-             ctx.lineTo(0, e.height/4);
-             ctx.lineTo(-e.width/2, e.height/2);
-             ctx.fill();
-        } else if (e.type === EnemyType.FUEL_DEPOT) {
-             ctx.fillStyle = '#ff6666';
-             ctx.fillRect(-e.width/2, -e.height/2, e.width, e.height);
-             ctx.fillStyle = '#fff';
-             ctx.font = '10px monospace';
-             ctx.fillText("FUEL", -10, 4);
-        } else if (e.type === EnemyType.GOLD_COIN) {
-            ctx.fillStyle = '#ffd700';
-            ctx.beginPath();
-            ctx.arc(0, 0, e.width/2, 0, Math.PI*2);
-            ctx.fill();
-            ctx.fillStyle = '#daa520';
-            ctx.font = 'bold 12px Arial';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText("$", 0, 1);
+        } else {
+            ctx.fillRect(e.x, e.y, e.width, e.height);
         }
-        ctx.restore();
+
+        if (e.type === EnemyType.FUEL_DEPOT) {
+            ctx.fillStyle = 'white';
+            ctx.font = '10px monospace';
+            ctx.fillText('FUEL', e.x + 2, e.y + 25);
+        }
     });
 
-    ctx.fillStyle = '#ffff00';
-    const p = s.player;
-    ctx.save();
-    ctx.translate(p.x + p.width/2, p.y + p.height/2);
-    ctx.beginPath();
-    ctx.moveTo(0, -p.height/2);
-    ctx.lineTo(p.width/2, p.height/2);
-    ctx.lineTo(0, p.height/2 - 5);
-    ctx.lineTo(-p.width/2, p.height/2);
-    ctx.fill();
-    ctx.fillStyle = Math.random() > 0.5 ? 'orange' : 'red';
-    ctx.beginPath();
-    ctx.moveTo(-4, p.height/2 - 5);
-    ctx.lineTo(4, p.height/2 - 5);
-    ctx.lineTo(0, p.height/2 + 10 + Math.random() * 5);
-    ctx.fill();
-    ctx.restore();
-
-    ctx.fillStyle = '#fff';
+    // Bullets
+    ctx.fillStyle = 'yellow';
     s.bullets.forEach(b => {
         ctx.fillRect(b.x, b.y, b.width, b.height);
     });
 
-    s.particles.forEach(pt => {
-        ctx.globalAlpha = pt.life;
-        ctx.fillStyle = pt.color;
-        ctx.fillRect(pt.x, pt.y, pt.size, pt.size);
+    // Particles
+    s.particles.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.life;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
         ctx.globalAlpha = 1.0;
     });
 
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, CANVAS_HEIGHT - 60, CANVAS_WIDTH, 60);
-    ctx.fillStyle = '#fff';
-    ctx.font = '20px "Press Start 2P", cursive'; 
-    ctx.fillText(`SCORE: ${s.player.score}`, 20, CANVAS_HEIGHT - 25);
-    ctx.fillText(`LIVES: ${s.player.lives}`, 400, CANVAS_HEIGHT - 25);
+    // UI Overlay (Fuel)
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(10, CANVAS_HEIGHT - 40, 150, 30);
     
-    ctx.fillStyle = '#444';
-    ctx.fillRect(150, CANVAS_HEIGHT - 45, 200, 20);
-    const fuelPct = s.player.fuel / MAX_FUEL;
-    ctx.fillStyle = fuelPct < 0.2 ? 'red' : 'yellow';
-    ctx.fillRect(152, CANVAS_HEIGHT - 43, 196 * fuelPct, 16);
-    ctx.fillStyle = '#000';
-    ctx.font = '10px monospace';
-    ctx.fillText("FUEL", 230, CANVAS_HEIGHT - 32);
+    ctx.fillStyle = 'white';
+    ctx.font = '12px "Press Start 2P"';
+    ctx.fillText(`FUEL`, 20, CANVAS_HEIGHT - 20);
+    
+    ctx.fillStyle = s.player.fuel < 20 ? 'red' : 'white';
+    ctx.fillRect(70, CANVAS_HEIGHT - 32, (s.player.fuel / MAX_FUEL) * 80, 16);
+
+    ctx.fillStyle = 'white';
+    ctx.fillText(`SCORE: ${s.player.score}`, 10, 30);
   };
 
   const gameLoop = () => {
-      if (state.current.gameState === GameState.PLAYING) {
-          update();
-      }
-      draw();
-      requestRef.current = requestAnimationFrame(gameLoop);
-  };
-
-  // --- Supabase / Leaderboard ---
-  const submitScore = async () => {
-    if (!inputValue.trim()) return;
-    if (!supabase) {
-        setSaveStatus("Supabase not configured!");
-        return;
+    update();
+    const canvas = canvasRef.current;
+    if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) draw(ctx);
     }
-    setLoadingScores(true);
-    setSaveStatus("Saving...");
-
-    try {
-        const { error } = await supabase
-            .from('scores')
-            .insert([
-                { 
-                    name: inputValue, 
-                    score: state.current.player.score,
-                    ip_address: userIpRef.current || null
-                }
-            ]);
-
-        if (error) {
-            console.error("Supabase Error:", error);
-            if (error.code === '42P01') {
-                setShowSqlModal(true);
-                setSaveStatus("Error: Table missing!");
-            } else {
-                setSaveStatus(`Error: ${error.message}`);
-            }
-        } else {
-            setSaveStatus("Saved!");
-            fetchLeaderboard();
-            setUiGameState(GameState.START);
-        }
-    } catch (err: any) {
-        setSaveStatus(`Net Error: ${err.message}`);
-    } finally {
-        setLoadingScores(false);
+    if (state.current.gameState === GameState.PLAYING) {
+        requestRef.current = requestAnimationFrame(gameLoop);
     }
   };
+
+  // --- Database & Leaderboard ---
 
   const fetchLeaderboard = async () => {
       if (!supabase) return;
       setLoadingScores(true);
       const { data, error } = await supabase
-        .from('scores')
-        .select('name, score')
-        .order('score', { ascending: false })
-        .limit(MAX_LEADERBOARD_ENTRIES);
-
+          .from('scores')
+          .select('name, score')
+          .order('score', { ascending: false })
+          .limit(MAX_LEADERBOARD_ENTRIES);
+      
       if (error) {
-          console.error("Fetch Error:", error);
+          console.error("Supabase fetch error:", error);
       } else {
           setLeaderboard(data || []);
       }
       setLoadingScores(false);
   };
 
+  const saveScore = async () => {
+    if (!supabase) {
+        setSaveStatus("Config Error: No DB");
+        return;
+    }
+    if (!inputValue.trim()) return;
+
+    setSaveStatus("Saving...");
+    const { error } = await supabase.from('scores').insert([{
+        name: inputValue.trim(),
+        score: state.current.player.score,
+        ip_address: userIpRef.current // Include IP
+    }]);
+
+    if (error) {
+        console.error("Supabase insert error:", error);
+        if (error.code === "42P01") {
+            setShowSqlModal(true);
+            setSaveStatus("Table Missing!");
+        } else {
+            setSaveStatus("Error Saving");
+        }
+    } else {
+        setSaveStatus("Saved!");
+        setUiGameState(GameState.LEADERBOARD_INPUT); 
+        fetchLeaderboard();
+    }
+  };
+
+  // --- Joystick Events ---
   const handleTouchStart = (e: React.TouchEvent) => {
-    const touch = e.touches[0];
-    if (!joystickContainerRef.current) return;
-    const rect = joystickContainerRef.current.getBoundingClientRect();
-    setJoystickPos({
-        x: touch.clientX - rect.left - rect.width/2,
-        y: touch.clientY - rect.top - rect.height/2
-    });
-    setIsJoystickActive(true);
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-      if (!isJoystickActive || !joystickContainerRef.current) return;
+      if (uiGameState !== GameState.PLAYING || controlMode !== 'JOYSTICK') return;
       const touch = e.touches[0];
-      const rect = joystickContainerRef.current.getBoundingClientRect();
-      let x = touch.clientX - rect.left - rect.width/2;
-      let y = touch.clientY - rect.top - rect.height/2;
+      const rect = joystickContainerRef.current?.getBoundingClientRect();
+      if (!rect) return;
       
-      const maxDist = 40;
-      const dist = Math.sqrt(x*x + y*y);
-      if (dist > maxDist) {
-          x = (x / dist) * maxDist;
-          y = (y / dist) * maxDist;
-      }
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
       
-      setJoystickPos({ x, y });
-      state.current.joystickVector = { x: x/maxDist, y: y/maxDist };
+      const x = touch.clientX - centerX;
+      const y = touch.clientY - centerY;
+      
+      setIsJoystickActive(true);
+      updateJoystick(x, y, rect.width/2);
   };
-
+  const handleTouchMove = (e: React.TouchEvent) => {
+      if (!isJoystickActive) return;
+      const touch = e.touches[0];
+      const rect = joystickContainerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const x = touch.clientX - centerX;
+      const y = touch.clientY - centerY;
+      
+      updateJoystick(x, y, rect.width/2);
+  };
   const handleTouchEnd = () => {
       setIsJoystickActive(false);
       setJoystickPos({ x: 0, y: 0 });
       state.current.joystickVector = { x: 0, y: 0 };
   };
-
-  useEffect(() => {
-    const ctx = canvasRef.current?.getContext('2d');
-    if (ctx) {
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-    }
-    fetchLeaderboard();
-  }, []);
-
-  return (
-    <div className="relative w-full h-full flex flex-col items-center">
-      <canvas
-        ref={canvasRef}
-        width={CANVAS_WIDTH}
-        height={CANVAS_HEIGHT}
-        className="w-full h-auto max-h-[80vh] object-contain bg-blue-900 cursor-crosshair"
-      />
-
-      {/* UI OVERLAYS */}
-      {uiGameState === GameState.START && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-white p-4">
-              <h1 className="text-4xl text-yellow-400 mb-4 font-bold tracking-widest text-center">RIVER STRIKE</h1>
-              <p className="mb-8 text-zinc-400 text-xs animate-pulse">PRESS ENTER TO START</p>
-              
-              <button 
-                onClick={startGame}
-                className="px-6 py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded shadow-[0_4px_0_rgb(20,80,20)] active:shadow-none active:translate-y-1 mb-4"
-              >
-                  START MISSION
-              </button>
-
-              <div className="flex gap-2 mb-4">
-                  <button onClick={() => setControlMode('BUTTONS')} className={`text-xs px-2 py-1 border ${controlMode === 'BUTTONS' ? 'bg-white text-black' : 'text-zinc-500'}`}>KEYBOARD</button>
-                  <button onClick={() => setControlMode('JOYSTICK')} className={`text-xs px-2 py-1 border ${controlMode === 'JOYSTICK' ? 'bg-white text-black' : 'text-zinc-500'}`}>TOUCH</button>
-              </div>
-
-              <button 
-                onClick={() => setShowSqlModal(true)}
-                className="text-[10px] text-zinc-600 underline hover:text-zinc-400 mt-4"
-              >
-                Veritabanı Kurulumu (SQL)
-              </button>
-
-              <div className="mt-4 p-4 border border-zinc-800 bg-zinc-900/80 rounded max-w-xs w-full">
-                  <h3 className="text-xs text-yellow-500 mb-2 text-center border-b border-zinc-700 pb-1">TOP ACES</h3>
-                  {loadingScores ? <p className="text-[10px] text-center">Loading...</p> : (
-                      <ul className="text-[10px] space-y-1">
-                          {leaderboard.length === 0 && <li className="text-zinc-600 text-center">No records yet</li>}
-                          {leaderboard.slice(0, 5).map((entry, i) => (
-                              <li key={i} className="flex justify-between">
-                                  <span>{i+1}. {entry.name.substring(0, 10)}</span>
-                                  <span className="text-yellow-200">{entry.score}</span>
-                              </li>
-                          ))}
-                      </ul>
-                  )}
-              </div>
-          </div>
-      )}
-
-      {uiGameState === GameState.GAME_OVER && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 text-white p-6">
-              <h2 className="text-3xl text-red-500 mb-2">GAME OVER</h2>
-              <p className="text-xl mb-6">SCORE: {state.current.player.score}</p>
-              
-              <div className="flex flex-col gap-2 w-full max-w-xs">
-                  <input 
-                    type="text" 
-                    maxLength={10}
-                    placeholder="ENTER NAME" 
-                    className="bg-zinc-800 border border-zinc-600 p-2 text-center text-white uppercase"
-                    value={inputValue}
-                    onChange={(e) => setInputValue(e.target.value.toUpperCase())}
-                  />
-                  <button 
-                    onClick={submitScore}
-                    disabled={loadingScores || !inputValue}
-                    className="bg-yellow-600 hover:bg-yellow-500 text-black font-bold py-2 px-4 rounded disabled:opacity-50"
-                  >
-                      {loadingScores ? "SAVING..." : "SAVE RECORD"}
-                  </button>
-                  {saveStatus && <p className="text-[10px] text-center text-yellow-200 mt-1">{saveStatus}</p>}
-                  
-                  <button 
-                    onClick={() => setUiGameState(GameState.START)}
-                    className="mt-4 text-xs text-zinc-500 hover:text-white"
-                  >
-                      BACK TO MENU
-                  </button>
-              </div>
-          </div>
-      )}
-
-      {controlMode === 'JOYSTICK' && uiGameState === GameState.PLAYING && (
-          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-32 h-32 bg-white/10 rounded-full backdrop-blur-sm border border-white/20 touch-none"
-               ref={joystickContainerRef}
-               onTouchStart={handleTouchStart}
-               onTouchMove={handleTouchMove}
-               onTouchEnd={handleTouchEnd}
-          >
-              <div className="absolute w-12 h-12 bg-yellow-400/80 rounded-full shadow-lg pointer-events-none transition-transform duration-75"
-                   style={{ 
-                       left: '50%', top: '50%', 
-                       marginLeft: '-24px', marginTop: '-24px',
-                       transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)`
-                   }}
-              />
-          </div>
-      )}
+  const updateJoystick = (x: number, y: number, radius: number) => {
+      const distance = Math.sqrt(x*x + y*y);
+      const maxDist = radius - 20;
       
-      {controlMode === 'JOYSTICK' && uiGameState === GameState.PLAYING && (
-          <button 
-             className="absolute bottom-10 right-4 w-16 h-16 bg-red-600/80 rounded-full border-4 border-red-800 active:bg-red-500 flex items-center justify-center text-white font-bold text-xs select-none"
-             onTouchStart={() => { state.current.keys['Space'] = true; }}
-             onTouchEnd={() => { state.current.keys['Space'] = false; }}
-          >
-              FIRE
-          </button>
-      )}
+      let normX = x;
+      let normY = y;
+      
+      if (distance > maxDist) {
+          normX = (x / distance) * maxDist;
+          normY = (y / distance) * maxDist;
+      }
+      
+      setJoystickPos({ x: normX, y: normY });
+      state.current.joystickVector = {
+          x: normX / maxDist,
+          y: normY / maxDist
+      };
+  };
 
-      {showSqlModal && (
-          <div className="absolute inset-0 z-50 bg-black/95 flex flex-col p-4 overflow-y-auto font-mono text-left">
-              <div className="flex justify-between items-center mb-4 border-b border-zinc-700 pb-2">
-                  <h3 className="text-red-400 font-bold">⚠️ Veritabanı Hatası (42P01)</h3>
-                  <button onClick={() => setShowSqlModal(false)} className="text-zinc-400 hover:text-white">✕</button>
-              </div>
-              
-              <div className="text-xs text-zinc-300 space-y-2 mb-4">
-                  <p><strong>Sorun:</strong> Supabase'de 'scores' tablosu bulunamadı.</p>
-                  <p><strong>Çözüm:</strong> Aşağıdaki adımları takip edin:</p>
-                  <ol className="list-decimal list-inside pl-2 space-y-1 text-zinc-400">
-                      <li>Supabase Dashboard'a gidin.</li>
-                      <li>Sol menüden <strong>SQL Editor</strong>'e tıklayın.</li>
-                      <li><strong>New Query</strong> diyerek boş bir sayfa açın.</li>
-                      <li>Aşağıdaki kodu kopyalayıp oraya yapıştırın.</li>
-                      <li>Sağ alttaki <strong>RUN</strong> butonuna basın.</li>
-                  </ol>
-              </div>
+  // --- Setup / Fix DB UI ---
+  const SqlSetupModal = () => (
+    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4">
+        <div className="bg-zinc-900 border-2 border-yellow-500 p-6 max-w-2xl w-full text-xs md:text-sm font-mono overflow-y-auto max-h-[90vh] shadow-[0_0_20px_rgba(234,179,8,0.3)]">
+            <div className="flex justify-between items-center mb-4 border-b border-zinc-700 pb-2">
+                <h3 className="text-yellow-400 text-lg">⚠️ Veritabanı Kurulumu</h3>
+                <button onClick={() => setShowSqlModal(false)} className="text-red-400 hover:text-red-300">✖ KAPAT</button>
+            </div>
+            
+            <p className="mb-4 text-zinc-300 leading-relaxed">
+                Görünüşe göre Supabase'de <strong>"scores"</strong> tablosu eksik veya hatalı.
+            </p>
 
-              <div className="bg-zinc-900 border border-zinc-700 p-2 rounded relative group">
-                  <pre className="text-[10px] text-green-400 overflow-x-auto whitespace-pre-wrap">
-{`-- 1. Tabloyu oluştur
+            <ol className="list-decimal pl-5 space-y-3 text-zinc-400 mb-6">
+                <li><span className="text-white">Supabase Paneli</span>'ne gidin.</li>
+                <li>Sol menüden <span className="text-white">SQL Editor</span> simgesine tıklayın.</li>
+                <li><span className="text-white">New Query</span> butonuna basın.</li>
+                <li>Aşağıdaki kodu kopyalayıp yapıştırın ve <span className="text-green-400 font-bold">RUN</span> tuşuna basın.</li>
+            </ol>
+
+            <div className="bg-black border border-zinc-700 p-4 rounded relative group">
+                <code className="block text-green-400 whitespace-pre-wrap break-all text-[10px] md:text-xs">
+{`-- 1. Tabloyu Oluştur (Eğer yoksa)
 create table if not exists scores (
   id bigint generated by default as identity primary key,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null,
   name text not null,
   score bigint not null,
-  ip_address text
+  ip_address text -- Yeni eklenen sütun
 );
 
--- 2. Güvenlik ayarlarını aç
+-- 2. Güvenlik Ayarları
 alter table scores enable row level security;
 
--- 3. Herkesin okumasına izin ver
 create policy "Enable read access for all users"
-on scores for select
-to anon
-using (true);
+on scores for select to anon using (true);
 
--- 4. Herkesin yazmasına izin ver
 create policy "Enable insert access for all users"
-on scores for insert
-to anon
-with check (true);
+on scores for insert to anon with check (true);
 
--- (Opsiyonel) Eğer tablo zaten varsa ve IP sütunu yoksa:
-alter table scores add column if not exists ip_address text;
-`}
-                  </pre>
-                  <button 
+-- 3. Eğer tablo zaten varsa ama 'ip_address' yoksa:
+alter table scores add column if not exists ip_address text;`}
+                </code>
+                <button 
                     onClick={() => navigator.clipboard.writeText(`create table if not exists scores ( id bigint generated by default as identity primary key, created_at timestamp with time zone default timezone('utc'::text, now()) not null, name text not null, score bigint not null, ip_address text ); alter table scores enable row level security; create policy "Enable read access for all users" on scores for select to anon using (true); create policy "Enable insert access for all users" on scores for insert to anon with check (true); alter table scores add column if not exists ip_address text;`)}
-                    className="absolute top-2 right-2 bg-zinc-700 hover:bg-zinc-600 text-white text-[8px] px-2 py-1 rounded"
-                  >
-                      COPY SQL
-                  </button>
-              </div>
-              
-              <button 
-                 onClick={() => window.location.reload()}
-                 className="mt-4 bg-blue-600 hover:bg-blue-500 text-white py-2 rounded text-xs"
-              >
-                  Sayfayı Yenile
-              </button>
+                    className="absolute top-2 right-2 bg-zinc-800 hover:bg-zinc-700 text-white px-2 py-1 text-xs rounded border border-zinc-600 transition-colors"
+                >
+                    KOPYALA
+                </button>
+            </div>
+            
+            <div className="mt-6 text-center">
+                <p className="text-zinc-500 mb-2">Kodu çalıştırdıktan sonra:</p>
+                <button 
+                    onClick={() => { setShowSqlModal(false); window.location.reload(); }}
+                    className="bg-yellow-600 hover:bg-yellow-500 text-black font-bold py-2 px-6 rounded transition-transform active:scale-95"
+                >
+                    SAYFAYI YENİLE
+                </button>
+            </div>
+        </div>
+    </div>
+  );
+
+  // --- Render ---
+  return (
+    <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
+      {showSqlModal && <SqlSetupModal />}
+      
+      <canvas
+        ref={canvasRef}
+        width={CANVAS_WIDTH}
+        height={CANVAS_HEIGHT}
+        className="w-full h-auto object-contain max-h-[80vh] mx-auto block bg-[#228B22]"
+      />
+
+      {uiGameState === GameState.START && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-20">
+          <h2 className="text-4xl text-yellow-400 mb-8 animate-pulse">RIVER RAID</h2>
+          <button 
+            onClick={startGame}
+            className="px-8 py-4 bg-red-600 text-white text-xl font-bold rounded hover:bg-red-500 transition-colors mb-4 border-4 border-red-800"
+          >
+            START MISSION
+          </button>
+          <div className="flex gap-4 mt-4">
+             <button onClick={() => setControlMode('BUTTONS')} className={`px-3 py-1 text-xs ${controlMode==='BUTTONS' ? 'bg-zinc-600 text-white':'bg-zinc-900 text-zinc-500'}`}>KEYS</button>
+             <button onClick={() => setControlMode('JOYSTICK')} className={`px-3 py-1 text-xs ${controlMode==='JOYSTICK' ? 'bg-zinc-600 text-white':'bg-zinc-900 text-zinc-500'}`}>TOUCH</button>
           </div>
+          
+          {/* Manual Trigger for Setup */}
+          <button 
+             onClick={() => setShowSqlModal(true)}
+             className="mt-8 text-[10px] text-zinc-600 hover:text-zinc-400 underline"
+          >
+             Veritabanı Kurulumu
+          </button>
+
+          {/* Simple IP Display */}
+          <div className="absolute bottom-2 right-2 text-[8px] text-zinc-700 font-mono">
+             IP: {userIpRef.current || "Scanning..."}
+          </div>
+        </div>
       )}
 
+      {uiGameState === GameState.GAME_OVER && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-20 p-4">
+          <h2 className="text-3xl text-red-500 mb-4">GAME OVER</h2>
+          <p className="text-white mb-6">FINAL SCORE: {state.current.player.score}</p>
+          
+          <div className="flex flex-col gap-2 w-full max-w-xs mb-6">
+            <input 
+              type="text" 
+              maxLength={10}
+              placeholder="ENTER NAME" 
+              className="bg-zinc-800 border-2 border-zinc-600 p-2 text-center text-white uppercase"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value.toUpperCase())}
+            />
+            <button 
+              onClick={saveScore}
+              disabled={!inputValue || !!saveStatus}
+              className="bg-green-700 hover:bg-green-600 disabled:bg-zinc-800 text-white p-2 rounded font-bold transition-colors"
+            >
+              {saveStatus || "SAVE RECORD"}
+            </button>
+          </div>
+
+          <button 
+            onClick={startGame}
+            className="px-6 py-2 bg-yellow-600 text-black font-bold rounded hover:bg-yellow-500"
+          >
+            TRY AGAIN
+          </button>
+          
+          <div className="mt-4 text-[10px] text-zinc-500">
+             {userIpRef.current ? `Logged as: ${userIpRef.current}` : "IP Hidden (AdBlock)"}
+          </div>
+        </div>
+      )}
+
+      {uiGameState === GameState.LEADERBOARD_INPUT && (
+         <div className="absolute inset-0 flex flex-col items-center justify-start bg-zinc-900 z-20 p-8 overflow-y-auto">
+            <h2 className="text-2xl text-yellow-400 mb-6">TOP PILOTS</h2>
+            {loadingScores ? (
+                <p className="text-zinc-500">Loading data...</p>
+            ) : (
+                <table className="w-full max-w-md text-left text-sm">
+                    <thead>
+                        <tr className="text-zinc-500 border-b border-zinc-700">
+                            <th className="pb-2">RANK</th>
+                            <th className="pb-2">PILOT</th>
+                            <th className="pb-2 text-right">SCORE</th>
+                        </tr>
+                    </thead>
+                    <tbody className="font-mono">
+                        {leaderboard.map((entry, idx) => (
+                            <tr key={idx} className={idx < 3 ? "text-yellow-200" : "text-zinc-300"}>
+                                <td className="py-2 text-zinc-500">#{idx + 1}</td>
+                                <td className="py-2">{entry.name}</td>
+                                <td className="py-2 text-right text-green-400">{entry.score}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            )}
+            <button 
+                onClick={startGame}
+                className="mt-8 px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded"
+            >
+                NEW MISSION
+            </button>
+         </div>
+      )}
+
+      {controlMode === 'JOYSTICK' && uiGameState === GameState.PLAYING && (
+          <div 
+            ref={joystickContainerRef}
+            className="absolute bottom-8 left-1/2 -translate-x-1/2 w-32 h-32 bg-white/10 rounded-full border-2 border-white/30 touch-none"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+          >
+              <div 
+                className="absolute w-12 h-12 bg-red-500/80 rounded-full shadow-lg pointer-events-none"
+                style={{
+                    left: '50%',
+                    top: '50%',
+                    transform: `translate(calc(-50% + ${joystickPos.x}px), calc(-50% + ${joystickPos.y}px))`
+                }}
+              />
+          </div>
+      )}
     </div>
   );
 };

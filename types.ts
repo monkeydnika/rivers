@@ -1,3 +1,4 @@
+
 export enum GameState {
   START,
   PLAYING,
@@ -21,7 +22,9 @@ export interface Entity {
 
 export enum WeaponType {
   SINGLE,
-  SPREAD
+  DOUBLE,  // Yeni
+  HELIX,   // Yeni (Sarmal)
+  SPREAD   // Mevcut (3'lü)
 }
 
 export interface Player extends Entity {
@@ -35,6 +38,7 @@ export interface Player extends Entity {
   isInvulnerable: boolean;
   invulnerableTimer: number;
   weaponType: WeaponType;
+  nukes: number;
 }
 
 export enum EnemyType {
@@ -43,10 +47,10 @@ export enum EnemyType {
   JET,
   FUEL_DEPOT,
   BRIDGE,
-  LIFE_ORB,
+  LIFE_ORB, // Can toplamak için
   WEAPON_CRATE,
   GOLD_COIN,
-  BOSS // New Enemy Type
+  BOSS
 }
 
 export interface Enemy extends Entity {
@@ -54,14 +58,16 @@ export interface Enemy extends Entity {
   vx: number;
   vy: number;
   shootTimer: number; 
-  hp: number; // Hit Points
-  maxHp: number; // Max Hit Points for health bar
+  hp: number;
+  maxHp: number;
 }
 
 export interface Bullet extends Entity {
   vx: number;
   vy: number;
-  isEnemy: boolean; 
+  isEnemy: boolean;
+  pattern?: 'straight' | 'helix_left' | 'helix_right'; // Mermi hareket tipi
+  initialX?: number; // Helix hareketi için merkez noktası
 }
 
 export interface Particle extends Entity {
@@ -83,7 +89,6 @@ export interface LeaderboardEntry {
   score: number;
 }
 
-// Yeni: Çevre dekorasyonları için tipler
 export enum DecorationType {
   TREE,
   HOUSE
@@ -93,6 +98,6 @@ export interface Decoration {
   x: number;
   y: number;
   type: DecorationType;
-  variant: number; // Added variant for visual diversity
+  variant: number;
   markedForDeletion: boolean;
 }

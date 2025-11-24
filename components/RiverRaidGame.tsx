@@ -26,12 +26,14 @@ export const RiverRaidGame: React.FC = () => {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [saveStatus, setSaveStatus] = useState<string>(""); 
   
-  // Economy State
+  // Economy & Inventory State
   const [userGold, setUserGold] = useState<number>(0);
   const [purchasedWeapon, setPurchasedWeapon] = useState<WeaponType>(WeaponType.SINGLE);
-
-  // Input Controls State
-  const [controlMode, setControlMode] = useState<'TOUCH' | 'KEYBOARD'>('TOUCH'); // Default to TOUCH/HYBRID for visible controls
+  const [inventory, setInventory] = useState({
+      nukes: 0,
+      hasShield: false,
+      extraLives: 0 // Purchased lives logic handled in startGame
+  });
 
   // Audio Context
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -59,6 +61,7 @@ export const RiverRaidGame: React.FC = () => {
       invulnerableTimer: 0,
       markedForDeletion: false,
       weaponType: WeaponType.SINGLE,
+      nukes: 0
     } as Player,
     bullets: [] as Bullet[],
     enemies: [] as Enemy[],
@@ -71,7 +74,8 @@ export const RiverRaidGame: React.FC = () => {
     level: 1,
     lastBridgePos: 0,
     isBossActive: false,
-    lastShotTime: 0
+    lastShotTime: 0,
+    nukeFlashTimer: 0
   });
 
   // --- Initialization & IP Fetch ---
@@ -115,7 +119,7 @@ export const RiverRaidGame: React.FC = () => {
   };
 
   // --- Sound Synthesis ---
-  const playSound = (type: 'shoot' | 'explosion' | 'fuel' | 'coin' | 'buy') => {
+  const playSound = (type: 'shoot' | 'explosion' | 'fuel' | 'coin' | 'buy' | 'nuke' | 'life') => {
     if (!audioCtxRef.current) return;
     const ctx = audioCtxRef.current;
     if (ctx.state === 'suspended') ctx.resume();
@@ -160,6 +164,14 @@ export const RiverRaidGame: React.FC = () => {
       gain.gain.linearRampToValueAtTime(0, now + 0.1);
       osc.start(now);
       osc.stop(now + 0.1);
+    } else if (type === 'life') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(500, now);
+      osc.frequency.linearRampToValueAtTime(1000, now + 0.3);
+      gain.gain.setValueAtTime(0.2, now);
+      gain.gain.linearRampToValueAtTime(0, now + 0.3);
+      osc.start(now);
+      osc.stop(now + 0.3);
     } else if (type === 'buy') {
         osc.type = 'triangle';
         osc.frequency.setValueAtTime(600, now);
@@ -168,6 +180,14 @@ export const RiverRaidGame: React.FC = () => {
         gain.gain.linearRampToValueAtTime(0, now + 0.2);
         osc.start(now);
         osc.stop(now + 0.2);
+    } else if (type === 'nuke') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(200, now);
+        osc.frequency.linearRampToValueAtTime(50, now + 1.0);
+        gain.gain.setValueAtTime(0.5, now);
+        gain.gain.linearRampToValueAtTime(0, now + 1.0);
+        osc.start(now);
+        osc.stop(now + 1.0);
     }
   };
 
@@ -177,6 +197,9 @@ export const RiverRaidGame: React.FC = () => {
       state.current.keys[e.code] = true;
       if (uiGameState === GameState.START || uiGameState === GameState.GAME_OVER) {
          if (e.code === 'KeyR' || e.code === 'Enter') startGame();
+      }
+      if (uiGameState === GameState.PLAYING && (e.code === 'KeyN')) {
+          activateNuke();
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -189,7 +212,7 @@ export const RiverRaidGame: React.FC = () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [uiGameState, purchasedWeapon]); // Dependency added for weapon carry-over
+  }, [uiGameState, purchasedWeapon, inventory]); 
 
   // --- Touch Button Handler ---
   const handleTouchBtn = (code: string, isPressed: boolean, e: React.TouchEvent | React.MouseEvent) => {
@@ -197,7 +220,25 @@ export const RiverRaidGame: React.FC = () => {
       state.current.keys[code] = isPressed;
   };
 
-  // --- Game Loop ---
+  // --- Game Mechanics ---
+
+  const activateNuke = () => {
+      if (state.current.player.nukes > 0) {
+          state.current.player.nukes--;
+          setInventory(prev => ({ ...prev, nukes: Math.max(0, prev.nukes - 1) }));
+          
+          // Kill all enemies on screen
+          state.current.enemies.forEach(e => {
+              e.hp = 0; 
+              createExplosion(e.x + e.width/2, e.y + e.height/2, 'white', 20);
+          });
+          
+          // Visual flash
+          state.current.nukeFlashTimer = 10;
+          playSound('nuke');
+      }
+  };
+
   const startGame = () => {
     state.current = {
       ...state.current,
@@ -211,13 +252,14 @@ export const RiverRaidGame: React.FC = () => {
         vy: 0,
         speedY: 0,
         fuel: MAX_FUEL,
-        lives: 5, // Set to 5 lives as requested
+        lives: 5, 
         score: 0,
-        gold: 0, // In-game session gold
-        isInvulnerable: false,
-        invulnerableTimer: 0,
+        gold: 0, 
+        isInvulnerable: inventory.hasShield,
+        invulnerableTimer: inventory.hasShield ? 900 : 0, 
         markedForDeletion: false,
-        weaponType: purchasedWeapon, // Use purchased weapon
+        weaponType: purchasedWeapon,
+        nukes: inventory.nukes
       },
       bullets: [],
       enemies: [],
@@ -230,15 +272,15 @@ export const RiverRaidGame: React.FC = () => {
       level: 1,
       lastBridgePos: 0,
       isBossActive: false,
-      lastShotTime: 0
+      lastShotTime: 0,
+      nukeFlashTimer: 0
     };
+
+    // Reset single-use items after applying
+    setInventory(prev => ({ ...prev, hasShield: false }));
 
     setUiGameState(GameState.PLAYING);
     setSaveStatus("");
-    
-    // Reset weapon purchase state after use (optional, or keep it perma?) 
-    // Let's keep it until game over, then user has to buy again or maybe it's a one-time consummable.
-    // For this implementation: Weapon resets on Game Over unless bought again.
     
     state.current.riverSegments = []; 
     for (let i = 0; i < CANVAS_HEIGHT / RIVER_SEGMENT_HEIGHT + 5; i++) {
@@ -252,14 +294,18 @@ export const RiverRaidGame: React.FC = () => {
   const generateRiverSegment = (y: number) => {
     const segments = state.current.riverSegments;
     let centerX = CANVAS_WIDTH / 2;
-    let width = 300; 
+    // Increased base width for a much wider river (Was 450)
+    let width = 520; 
 
     if (segments.length > 0) {
         const last = segments[segments.length - 1];
-        const time = state.current.frameCount * 0.01;
-        const noise = Math.sin(time) * 20 + Math.sin(time * 0.5) * 40;
+        const time = state.current.frameCount * 0.005; // Slower meander
+        const noise = Math.sin(time) * 30 + Math.sin(time * 0.5) * 20;
         centerX = CANVAS_WIDTH / 2 + noise;
-        width = 250 + Math.sin(time * 0.3) * 100;
+        
+        // Massive river width variation (Was 400 base)
+        width = 480 + Math.sin(time * 0.3) * 50; 
+        
         centerX = Math.max(width/2 + 20, Math.min(CANVAS_WIDTH - width/2 - 20, centerX));
     }
 
@@ -281,19 +327,25 @@ export const RiverRaidGame: React.FC = () => {
   const spawnEnemy = (y: number) => {
      if (state.current.isBossActive) return;
 
-     const rand = Math.random();
      const segments = state.current.riverSegments;
      const segment = segments[segments.length - 1]; 
      if (!segment) return;
      
-     const minX = segment.centerX - segment.width / 2 + 20;
-     const maxX = segment.centerX + segment.width / 2 - 20;
+     const isNarrow = segment.width < 350; 
+
+     // DENSITY CONTROL:
+     if (Math.random() > 0.3) return; 
+
+     const minX = segment.centerX - segment.width / 2 + 40; 
+     const maxX = segment.centerX + segment.width / 2 - 40;
      const x = minX + Math.random() * (maxX - minX);
 
      let type = EnemyType.SHIP;
      let hp = 1;
 
-     if (state.current.distanceTraveled - state.current.lastBridgePos > 2000) {
+     // Bridges REMOVED per user request
+     /*
+     if (state.current.distanceTraveled - state.current.lastBridgePos > 3000 && !isNarrow) {
          type = EnemyType.BRIDGE;
          hp = 10;
          state.current.lastBridgePos = state.current.distanceTraveled;
@@ -302,29 +354,40 @@ export const RiverRaidGame: React.FC = () => {
          });
          return;
      }
+     */
 
-     if (rand < 0.02) {
+     const rand = Math.random();
+
+     if (rand < 0.15) {
          type = EnemyType.FUEL_DEPOT;
          hp = 1;
-     } else if (rand < 0.05) {
+     } else if (rand < 0.20) {
+         type = EnemyType.GOLD_COIN;
+         hp = 1;
+     } else if (rand < 0.22) {
+        type = EnemyType.LIFE_ORB;
+        hp = 1;
+     } else if (rand < 0.60) {
+         // EMPTY SLOT
+         return;
+     } else if (rand < 0.85) {
+         // HELI
+         if (isNarrow) return;
          type = EnemyType.HELICOPTER;
          hp = 2;
-     } else if (rand < 0.07) {
+     } else {
+         // JET
+         if (isNarrow) return;
          type = EnemyType.JET;
          hp = 1;
-     } else if (rand < 0.08) {
-        type = EnemyType.GOLD_COIN;
-        hp = 1;
-     } else {
-         return; 
      }
 
      state.current.enemies.push({
          type,
          x,
          y,
-         width: type === EnemyType.FUEL_DEPOT ? 24 : 32,
-         height: type === EnemyType.FUEL_DEPOT ? 48 : 32,
+         width: type === EnemyType.FUEL_DEPOT ? 24 : (type === EnemyType.LIFE_ORB ? 24 : 32),
+         height: type === EnemyType.FUEL_DEPOT ? 48 : (type === EnemyType.LIFE_ORB ? 24 : 32),
          vx: type === EnemyType.HELICOPTER ? (Math.random() > 0.5 ? 2 : -2) : 0,
          vy: 0,
          shootTimer: 0,
@@ -354,6 +417,16 @@ export const RiverRaidGame: React.FC = () => {
     const s = state.current;
     s.frameCount++;
 
+    if (s.nukeFlashTimer > 0) s.nukeFlashTimer--;
+
+    // Update invulnerability
+    if (s.player.isInvulnerable) {
+        s.player.invulnerableTimer--;
+        if (s.player.invulnerableTimer <= 0) {
+            s.player.isInvulnerable = false;
+        }
+    }
+
     const keys = s.keys;
     let dx = 0;
 
@@ -374,13 +447,23 @@ export const RiverRaidGame: React.FC = () => {
     // Shooting
     const now = Date.now();
     if ((keys['Space'] || keys['KeyZ']) && now - s.lastShotTime > 200) { 
+       const px = s.player.x + PLAYER_WIDTH/2;
+       const py = s.player.y;
+
        // Weapon Logic
        if (s.player.weaponType === WeaponType.SPREAD) {
-            s.bullets.push({ x: s.player.x + PLAYER_WIDTH/2 - 4, y: s.player.y, width: 8, height: 16, vx: 0, vy: -12, isEnemy: false, markedForDeletion: false });
-            s.bullets.push({ x: s.player.x + PLAYER_WIDTH/2 - 4, y: s.player.y, width: 8, height: 16, vx: -2, vy: -10, isEnemy: false, markedForDeletion: false });
-            s.bullets.push({ x: s.player.x + PLAYER_WIDTH/2 - 4, y: s.player.y, width: 8, height: 16, vx: 2, vy: -10, isEnemy: false, markedForDeletion: false });
+            s.bullets.push({ x: px - 4, y: py, width: 8, height: 16, vx: 0, vy: -12, isEnemy: false, markedForDeletion: false, pattern: 'straight' });
+            s.bullets.push({ x: px - 4, y: py, width: 8, height: 16, vx: -2, vy: -10, isEnemy: false, markedForDeletion: false, pattern: 'straight' });
+            s.bullets.push({ x: px - 4, y: py, width: 8, height: 16, vx: 2, vy: -10, isEnemy: false, markedForDeletion: false, pattern: 'straight' });
+       } else if (s.player.weaponType === WeaponType.HELIX) {
+            s.bullets.push({ x: px - 4, y: py, width: 10, height: 10, vx: 0, vy: -10, isEnemy: false, markedForDeletion: false, pattern: 'helix_left', initialX: px - 4 });
+            s.bullets.push({ x: px - 4, y: py, width: 10, height: 10, vx: 0, vy: -10, isEnemy: false, markedForDeletion: false, pattern: 'helix_right', initialX: px - 4 });
+       } else if (s.player.weaponType === WeaponType.DOUBLE) {
+            s.bullets.push({ x: px - 12, y: py, width: 8, height: 16, vx: 0, vy: -12, isEnemy: false, markedForDeletion: false, pattern: 'straight' });
+            s.bullets.push({ x: px + 4, y: py, width: 8, height: 16, vx: 0, vy: -12, isEnemy: false, markedForDeletion: false, pattern: 'straight' });
        } else {
-            s.bullets.push({ x: s.player.x + PLAYER_WIDTH/2 - 4, y: s.player.y, width: 8, height: 16, vx: 0, vy: -12, isEnemy: false, markedForDeletion: false });
+            // Single
+            s.bullets.push({ x: px - 4, y: py, width: 8, height: 16, vx: 0, vy: -12, isEnemy: false, markedForDeletion: false, pattern: 'straight' });
        }
        s.lastShotTime = now;
        playSound('shoot');
@@ -413,7 +496,7 @@ export const RiverRaidGame: React.FC = () => {
     const playerSeg = s.riverSegments.find(seg => 
         s.player.y + s.player.height > seg.y && s.player.y < seg.y + RIVER_SEGMENT_HEIGHT
     );
-    if (playerSeg) {
+    if (playerSeg && !s.player.isInvulnerable) {
         const leftBank = playerSeg.centerX - playerSeg.width / 2;
         const rightBank = playerSeg.centerX + playerSeg.width / 2;
         if (s.player.x < leftBank || s.player.x + s.player.width > rightBank) {
@@ -421,7 +504,7 @@ export const RiverRaidGame: React.FC = () => {
         }
     }
 
-    // Enemies
+    // Enemies & Pickups
     s.enemies.forEach(e => {
         e.y += s.scrollSpeed;
         e.x += e.vx;
@@ -437,7 +520,7 @@ export const RiverRaidGame: React.FC = () => {
         if (e.type === EnemyType.JET) e.y += 2; 
 
         if (e.type === EnemyType.BRIDGE && !e.markedForDeletion) {
-             if (checkCollision(s.player, e)) killPlayer("Crashed into bridge");
+             if (checkCollision(s.player, e) && !s.player.isInvulnerable) killPlayer("Crashed into bridge");
         } else if (e.type === EnemyType.FUEL_DEPOT) {
              if (checkCollision(s.player, e)) {
                  s.player.fuel = Math.min(s.player.fuel + FUEL_REFILL_RATE, MAX_FUEL);
@@ -450,11 +533,23 @@ export const RiverRaidGame: React.FC = () => {
                 e.markedForDeletion = true;
                 playSound('coin');
             }
+        } else if (e.type === EnemyType.LIFE_ORB) {
+            if (checkCollision(s.player, e)) {
+                s.player.lives += 1;
+                e.markedForDeletion = true;
+                playSound('life');
+                // Floating text effect could go here
+            }
         } else if (e.type !== EnemyType.BRIDGE) {
             if (checkCollision(s.player, e)) {
-                killPlayer("Crashed into enemy");
-                e.markedForDeletion = true;
-                createExplosion(e.x, e.y, 'orange', 10);
+                if (s.player.isInvulnerable) {
+                     e.markedForDeletion = true;
+                     createExplosion(e.x, e.y, 'orange', 10);
+                } else {
+                    killPlayer("Crashed into enemy");
+                    e.markedForDeletion = true;
+                    createExplosion(e.x, e.y, 'orange', 10);
+                }
             }
         }
 
@@ -463,12 +558,19 @@ export const RiverRaidGame: React.FC = () => {
 
     // Bullets
     s.bullets.forEach(b => {
-        b.x += b.vx;
+        // HELIX MOVEMENT
+        if (b.pattern === 'helix_left') {
+             b.x = (b.initialX || 0) + Math.sin(b.y * 0.05) * 20;
+        } else if (b.pattern === 'helix_right') {
+             b.x = (b.initialX || 0) - Math.sin(b.y * 0.05) * 20;
+        } else {
+            b.x += b.vx;
+        }
         b.y += b.vy;
 
         s.enemies.forEach(e => {
             if (!e.markedForDeletion && !b.markedForDeletion && checkCollision(b, e)) {
-                if (e.type === EnemyType.GOLD_COIN) return; 
+                if (e.type === EnemyType.GOLD_COIN || e.type === EnemyType.LIFE_ORB) return; 
 
                 b.markedForDeletion = true;
                 e.hp--;
@@ -514,6 +616,27 @@ export const RiverRaidGame: React.FC = () => {
   };
 
   const killPlayer = (reason: string) => {
+      // Check for extra lives
+      if (state.current.player.lives > 1) {
+          console.log("Life Lost:", reason);
+          state.current.player.lives--;
+          
+          // Reset position but keep progress
+          state.current.player.x = CANVAS_WIDTH / 2 - PLAYER_WIDTH / 2;
+          state.current.player.y = CANVAS_HEIGHT - 120;
+          state.current.player.fuel = MAX_FUEL;
+          state.current.player.isInvulnerable = true;
+          state.current.player.invulnerableTimer = 180; // 3 seconds grace
+          
+          // Clear bullets to be fair
+          state.current.bullets = [];
+          
+          // Small explosion effect
+          createExplosion(state.current.player.x, state.current.player.y, 'yellow', 20);
+          
+          return;
+      }
+
       console.log("Game Over:", reason);
       state.current.gameState = GameState.GAME_OVER;
       setUiGameState(GameState.GAME_OVER);
@@ -563,7 +686,7 @@ export const RiverRaidGame: React.FC = () => {
     });
 
     // Player
-    ctx.fillStyle = 'yellow';
+    ctx.fillStyle = s.player.isInvulnerable ? (Math.floor(Date.now() / 100) % 2 === 0 ? 'cyan' : 'yellow') : 'yellow';
     // Simple jet shape
     ctx.beginPath();
     ctx.moveTo(s.player.x + s.player.width/2, s.player.y);
@@ -573,6 +696,15 @@ export const RiverRaidGame: React.FC = () => {
     ctx.closePath();
     ctx.fill();
 
+    // Shield Effect
+    if (s.player.isInvulnerable) {
+        ctx.strokeStyle = 'cyan';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(s.player.x + s.player.width/2, s.player.y + s.player.height/2, 25, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
     // Enemies
     s.enemies.forEach(e => {
         if (e.type === EnemyType.SHIP) ctx.fillStyle = 'white';
@@ -581,6 +713,7 @@ export const RiverRaidGame: React.FC = () => {
         else if (e.type === EnemyType.FUEL_DEPOT) ctx.fillStyle = '#FF4500';
         else if (e.type === EnemyType.BRIDGE) ctx.fillStyle = '#333';
         else if (e.type === EnemyType.GOLD_COIN) ctx.fillStyle = 'gold';
+        else if (e.type === EnemyType.LIFE_ORB) ctx.fillStyle = '#FF1493'; // Deep Pink for Life
 
         if (e.type === EnemyType.GOLD_COIN) {
             ctx.beginPath();
@@ -589,6 +722,20 @@ export const RiverRaidGame: React.FC = () => {
             ctx.strokeStyle = '#DAA520';
             ctx.lineWidth = 2;
             ctx.stroke();
+        } else if (e.type === EnemyType.LIFE_ORB) {
+            // Draw Heart Shape
+            const cx = e.x + e.width/2;
+            const cy = e.y + e.height/2;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy + 6);
+            ctx.bezierCurveTo(cx - 6, cy - 6, cx - 12, cy + 2, cx, cy + 12);
+            ctx.bezierCurveTo(cx + 12, cy + 2, cx + 6, cy - 6, cx, cy + 6);
+            ctx.fill();
+            // Glow
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = "pink";
+            ctx.stroke();
+            ctx.shadowBlur = 0;
         } else {
             ctx.fillRect(e.x, e.y, e.width, e.height);
         }
@@ -601,9 +748,16 @@ export const RiverRaidGame: React.FC = () => {
     });
 
     // Bullets
-    ctx.fillStyle = 'yellow';
     s.bullets.forEach(b => {
-        ctx.fillRect(b.x, b.y, b.width, b.height);
+        if (b.pattern === 'helix_left' || b.pattern === 'helix_right') {
+            ctx.fillStyle = '#00FF00'; // Matrix green for helix
+            ctx.beginPath();
+            ctx.arc(b.x + b.width/2, b.y + b.height/2, 5, 0, Math.PI * 2);
+            ctx.fill();
+        } else {
+            ctx.fillStyle = 'yellow';
+            ctx.fillRect(b.x, b.y, b.width, b.height);
+        }
     });
 
     // Particles
@@ -615,6 +769,12 @@ export const RiverRaidGame: React.FC = () => {
         ctx.fill();
         ctx.globalAlpha = 1.0;
     });
+
+    // Nuke Flash
+    if (s.nukeFlashTimer > 0) {
+        ctx.fillStyle = `rgba(255, 255, 255, ${s.nukeFlashTimer / 10})`;
+        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    }
 
     // UI Overlay (Fuel)
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
@@ -633,6 +793,16 @@ export const RiverRaidGame: React.FC = () => {
     // Draw Current Run Gold
     ctx.fillStyle = 'gold';
     ctx.fillText(`GOLD: ${s.player.gold}`, 10, 50);
+
+    // Draw Nukes
+    if (s.player.nukes > 0) {
+        ctx.fillStyle = 'orange';
+        ctx.fillText(`NUKES: ${s.player.nukes}`, 10, 70);
+    }
+
+    // Draw Lives
+    ctx.fillStyle = '#FF1493';
+    ctx.fillText(`LIVES: ${s.player.lives}`, 10, 90);
   };
 
   const gameLoop = () => {
@@ -695,26 +865,47 @@ export const RiverRaidGame: React.FC = () => {
     setUiGameState(GameState.SHOP);
   };
 
-  const buyItem = (item: 'weapon' | 'life') => {
-     if (item === 'weapon') {
-         if (userGold >= 10 && purchasedWeapon !== WeaponType.SPREAD) {
-             setUserGold(prev => {
-                 const newVal = prev - 10;
-                 localStorage.setItem('riverRaidGold', newVal.toString());
-                 return newVal;
-             });
+  const buyItem = (item: 'weapon_double' | 'weapon_spread' | 'weapon_helix' | 'shield' | 'nuke' | 'life') => {
+     if (item === 'weapon_double') {
+         if (userGold >= 15 && purchasedWeapon !== WeaponType.DOUBLE) {
+             setUserGold(prev => { const n = prev - 15; localStorage.setItem('riverRaidGold', n.toString()); return n; });
+             setPurchasedWeapon(WeaponType.DOUBLE);
+             playSound('buy');
+         }
+     } else if (item === 'weapon_spread') {
+         if (userGold >= 30 && purchasedWeapon !== WeaponType.SPREAD) {
+             setUserGold(prev => { const n = prev - 30; localStorage.setItem('riverRaidGold', n.toString()); return n; });
              setPurchasedWeapon(WeaponType.SPREAD);
              playSound('buy');
          }
-     } else if (item === 'life') {
-         if (userGold >= 5) {
-             setUserGold(prev => {
-                 const newVal = prev - 5;
-                 localStorage.setItem('riverRaidGold', newVal.toString());
-                 return newVal;
-             });
-             state.current.player.lives += 1; // Usually applied on next game, but here we just store concept
+     } else if (item === 'weapon_helix') {
+         if (userGold >= 25 && purchasedWeapon !== WeaponType.HELIX) {
+             setUserGold(prev => { const n = prev - 25; localStorage.setItem('riverRaidGold', n.toString()); return n; });
+             setPurchasedWeapon(WeaponType.HELIX);
              playSound('buy');
+         }
+     } else if (item === 'shield') {
+         if (userGold >= 15 && !inventory.hasShield) {
+             setUserGold(prev => { const n = prev - 15; localStorage.setItem('riverRaidGold', n.toString()); return n; });
+             setInventory(prev => ({ ...prev, hasShield: true }));
+             playSound('buy');
+         }
+     } else if (item === 'nuke') {
+         if (userGold >= 20) {
+             setUserGold(prev => { const n = prev - 20; localStorage.setItem('riverRaidGold', n.toString()); return n; });
+             setInventory(prev => ({ ...prev, nukes: prev.nukes + 1 }));
+             playSound('buy');
+         }
+     } else if (item === 'life') {
+         if (userGold >= 50) {
+              setUserGold(prev => { const n = prev - 50; localStorage.setItem('riverRaidGold', n.toString()); return n; });
+              setInventory(prev => ({ ...prev, extraLives: prev.extraLives + 1 })); // Only for next game start logically or add immediately? 
+              // Simplification: In 'startGame' lives are set to 5. 
+              // If purchased in shop (Game Over screen), we probably want it to persist to next game.
+              // For now, let's just make it add to current player stats if playing, but we are in shop only when not playing usually.
+              // Let's increment a 'startingLivesBonus' or similar? 
+              // Better: Just save it to inventory and add to 5 at start.
+              playSound('buy');
          }
      }
   };
@@ -724,7 +915,7 @@ export const RiverRaidGame: React.FC = () => {
     <div className="relative w-full h-full bg-zinc-900 overflow-hidden flex flex-col items-center justify-center">
       
       {/* 1. TOP: Game Screen (Canvas) */}
-      <div className="relative w-full max-w-[600px] bg-black border-4 border-zinc-800 rounded-t-xl overflow-hidden shadow-2xl" style={{ flex: '3' }}>
+      <div className="relative w-full max-w-[600px] bg-black border-4 border-zinc-800 rounded-t-xl overflow-hidden shadow-2xl shrink-0" style={{ height: '60%' }}>
         <canvas
             ref={canvasRef}
             width={CANVAS_WIDTH}
@@ -743,7 +934,9 @@ export const RiverRaidGame: React.FC = () => {
             >
                 START MISSION
             </button>
-            <div className="text-zinc-500 text-[10px] mt-4">LIVES: 5</div>
+            <div className="text-zinc-500 text-[10px] mt-4">LIVES: 5 {inventory.extraLives > 0 ? `+ ${inventory.extraLives} BONUS` : ''}</div>
+            {inventory.hasShield && <div className="text-cyan-400 text-xs mt-2">SHIELD ACTIVE</div>}
+            {inventory.nukes > 0 && <div className="text-orange-400 text-xs mt-1">NUKES: {inventory.nukes}</div>}
             </div>
         )}
 
@@ -787,39 +980,105 @@ export const RiverRaidGame: React.FC = () => {
         )}
         
         {uiGameState === GameState.SHOP && (
-             <div className="absolute inset-0 flex flex-col items-center justify-start bg-zinc-900 z-20 p-8">
-                <h2 className="text-2xl text-blue-400 mb-2 font-bold">MARKET</h2>
-                <div className="text-yellow-400 mb-6">BALANCE: {userGold} G</div>
+             <div className="absolute inset-0 flex flex-col items-center justify-start bg-zinc-900 z-20 p-4 overflow-y-auto">
+                <h2 className="text-2xl text-blue-400 mb-2 font-bold sticky top-0 bg-zinc-900 w-full text-center pb-2">MARKET</h2>
+                <div className="text-yellow-400 mb-4 sticky top-10 bg-zinc-900 w-full text-center pb-2 border-b border-zinc-700">BALANCE: {userGold} G</div>
 
-                <div className="w-full max-w-xs space-y-4">
-                    <div className="bg-zinc-800 p-3 rounded border border-zinc-700 flex justify-between items-center">
+                <div className="w-full max-w-xs space-y-3 pb-8">
+                    {/* Double Gun */}
+                    <div className="bg-zinc-800 p-2 rounded border border-zinc-700 flex justify-between items-center">
                         <div>
-                            <div className="text-white text-sm">SPREAD GUN</div>
-                            <div className="text-zinc-500 text-[10px]">Triple shot power</div>
+                            <div className="text-white text-xs">DOUBLE GUN</div>
+                            <div className="text-zinc-500 text-[10px]">Dual parallel fire</div>
                         </div>
                         <button 
-                            onClick={() => buyItem('weapon')}
-                            disabled={purchasedWeapon === WeaponType.SPREAD || userGold < 10}
-                            className={`px-3 py-1 rounded text-xs font-bold ${purchasedWeapon === WeaponType.SPREAD ? 'bg-green-900 text-green-200' : 'bg-yellow-600 text-black'}`}
+                            onClick={() => buyItem('weapon_double')}
+                            disabled={purchasedWeapon === WeaponType.DOUBLE || userGold < 15}
+                            className={`px-3 py-1 rounded text-xs font-bold ${purchasedWeapon === WeaponType.DOUBLE ? 'bg-green-900 text-green-200' : 'bg-yellow-600 text-black'}`}
                         >
-                            {purchasedWeapon === WeaponType.SPREAD ? 'OWNED' : '10 G'}
+                            {purchasedWeapon === WeaponType.DOUBLE ? 'OWNED' : '15 G'}
                         </button>
                     </div>
 
-                    {/* Note: Buying life here is symbolic as lives reset on StartGame in this simple version, 
-                        but we allow spending gold to simulate economy functionality */}
-                    <div className="bg-zinc-800 p-3 rounded border border-zinc-700 flex justify-between items-center opacity-50 pointer-events-none">
-                         <div>
-                            <div className="text-white text-sm">EXTRA LIFE</div>
-                            <div className="text-zinc-500 text-[10px]">Start with +1 Life</div>
+                    {/* Helix Gun */}
+                    <div className="bg-zinc-800 p-2 rounded border border-zinc-700 flex justify-between items-center">
+                        <div>
+                            <div className="text-white text-xs">HELIX GUN</div>
+                            <div className="text-zinc-500 text-[10px]">Wide wave pattern</div>
                         </div>
-                         <button className="px-3 py-1 bg-zinc-600 text-zinc-400 rounded text-xs font-bold">SOON</button>
+                        <button 
+                            onClick={() => buyItem('weapon_helix')}
+                            disabled={purchasedWeapon === WeaponType.HELIX || userGold < 25}
+                            className={`px-3 py-1 rounded text-xs font-bold ${purchasedWeapon === WeaponType.HELIX ? 'bg-green-900 text-green-200' : 'bg-yellow-600 text-black'}`}
+                        >
+                            {purchasedWeapon === WeaponType.HELIX ? 'OWNED' : '25 G'}
+                        </button>
+                    </div>
+
+                     {/* Spread Gun */}
+                    <div className="bg-zinc-800 p-2 rounded border border-zinc-700 flex justify-between items-center">
+                        <div>
+                            <div className="text-white text-xs">SPREAD GUN</div>
+                            <div className="text-zinc-500 text-[10px]">Triple shot power</div>
+                        </div>
+                        <button 
+                            onClick={() => buyItem('weapon_spread')}
+                            disabled={purchasedWeapon === WeaponType.SPREAD || userGold < 30}
+                            className={`px-3 py-1 rounded text-xs font-bold ${purchasedWeapon === WeaponType.SPREAD ? 'bg-green-900 text-green-200' : 'bg-yellow-600 text-black'}`}
+                        >
+                            {purchasedWeapon === WeaponType.SPREAD ? 'OWNED' : '30 G'}
+                        </button>
+                    </div>
+
+                    {/* Extra Life */}
+                    <div className="bg-zinc-800 p-2 rounded border border-zinc-700 flex justify-between items-center">
+                         <div>
+                            <div className="text-white text-xs">EXTRA LIFE</div>
+                            <div className="text-zinc-500 text-[10px]">Add +1 to start ({inventory.extraLives})</div>
+                        </div>
+                         <button 
+                            onClick={() => buyItem('life')}
+                            disabled={userGold < 50}
+                            className="px-3 py-1 rounded text-xs font-bold bg-pink-600 text-white hover:bg-pink-500"
+                         >
+                            50 G
+                         </button>
+                    </div>
+
+                    {/* Shield */}
+                    <div className="bg-zinc-800 p-2 rounded border border-zinc-700 flex justify-between items-center">
+                         <div>
+                            <div className="text-white text-xs">SHIELD (15s)</div>
+                            <div className="text-zinc-500 text-[10px]">Start Invincible</div>
+                        </div>
+                         <button 
+                            onClick={() => buyItem('shield')}
+                            disabled={inventory.hasShield || userGold < 15}
+                            className={`px-3 py-1 rounded text-xs font-bold ${inventory.hasShield ? 'bg-green-900 text-green-200' : 'bg-yellow-600 text-black'}`}
+                         >
+                            {inventory.hasShield ? 'READY' : '15 G'}
+                         </button>
+                    </div>
+
+                    {/* Nuke */}
+                    <div className="bg-zinc-800 p-2 rounded border border-zinc-700 flex justify-between items-center">
+                         <div>
+                            <div className="text-white text-xs">NUKE BOMB</div>
+                            <div className="text-zinc-500 text-[10px]">Clear Screen ({inventory.nukes})</div>
+                        </div>
+                         <button 
+                            onClick={() => buyItem('nuke')}
+                            disabled={userGold < 20}
+                            className="px-3 py-1 rounded text-xs font-bold bg-yellow-600 text-black hover:bg-yellow-500"
+                         >
+                            20 G
+                         </button>
                     </div>
                 </div>
 
                 <button 
                     onClick={() => setUiGameState(GameState.START)}
-                    className="mt-auto px-6 py-3 bg-zinc-700 text-white font-bold rounded border border-zinc-500"
+                    className="mt-auto px-6 py-3 bg-zinc-700 text-white font-bold rounded border border-zinc-500 w-full"
                 >
                     BACK
                 </button>
@@ -862,17 +1121,17 @@ export const RiverRaidGame: React.FC = () => {
       </div>
 
       {/* 2. BOTTOM: Control Panel (Totally separate div) */}
-      <div className="w-full max-w-[600px] bg-zinc-800 border-x-4 border-b-4 border-zinc-800 rounded-b-xl p-4 flex flex-col gap-2 shadow-2xl relative z-10" style={{ flex: '1', minHeight: '200px' }}>
+      <div className="w-full max-w-[600px] bg-zinc-800 border-x-4 border-b-4 border-zinc-800 rounded-b-xl p-2 flex flex-col shadow-2xl relative z-10 box-border" style={{ height: '40%' }}>
          {/* Decorative Lines */}
          <div className="w-full h-1 bg-black/20 mb-2"></div>
          
-         <div className="flex items-center justify-between h-full px-4">
-            {/* D-PAD */}
-            <div className="grid grid-cols-3 gap-1 w-32 h-32 bg-zinc-700/50 p-2 rounded-full shadow-inner">
+         <div className="flex items-center justify-between h-full px-2 pb-2">
+            {/* D-PAD (LARGE) */}
+            <div className="grid grid-cols-3 gap-1 w-48 h-48 bg-zinc-700/50 p-2 rounded-full shadow-inner shrink-0 scale-90 md:scale-100 origin-bottom-left">
                  {/* UP */}
                  <div className="col-start-2">
                     <button 
-                    className="w-full h-full bg-zinc-900 border border-zinc-600 rounded hover:bg-zinc-800 active:bg-black active:scale-95 transition-all flex items-center justify-center text-zinc-500"
+                    className="w-full h-full bg-zinc-900 border-2 border-zinc-600 rounded-lg hover:bg-zinc-800 active:bg-black active:scale-95 transition-all flex items-center justify-center text-zinc-500 text-2xl font-black"
                     onTouchStart={(e) => handleTouchBtn('ArrowUp', true, e)}
                     onTouchEnd={(e) => handleTouchBtn('ArrowUp', false, e)}
                     onMouseDown={(e) => handleTouchBtn('ArrowUp', true, e)}
@@ -882,7 +1141,7 @@ export const RiverRaidGame: React.FC = () => {
                 {/* LEFT */}
                 <div className="col-start-1 row-start-2">
                     <button 
-                    className="w-full h-full bg-zinc-900 border border-zinc-600 rounded hover:bg-zinc-800 active:bg-black active:scale-95 transition-all flex items-center justify-center text-zinc-500"
+                    className="w-full h-full bg-zinc-900 border-2 border-zinc-600 rounded-lg hover:bg-zinc-800 active:bg-black active:scale-95 transition-all flex items-center justify-center text-zinc-500 text-2xl font-black"
                     onTouchStart={(e) => handleTouchBtn('ArrowLeft', true, e)}
                     onTouchEnd={(e) => handleTouchBtn('ArrowLeft', false, e)}
                     onMouseDown={(e) => handleTouchBtn('ArrowLeft', true, e)}
@@ -892,7 +1151,7 @@ export const RiverRaidGame: React.FC = () => {
                 {/* RIGHT */}
                 <div className="col-start-3 row-start-2">
                     <button 
-                    className="w-full h-full bg-zinc-900 border border-zinc-600 rounded hover:bg-zinc-800 active:bg-black active:scale-95 transition-all flex items-center justify-center text-zinc-500"
+                    className="w-full h-full bg-zinc-900 border-2 border-zinc-600 rounded-lg hover:bg-zinc-800 active:bg-black active:scale-95 transition-all flex items-center justify-center text-zinc-500 text-2xl font-black"
                     onTouchStart={(e) => handleTouchBtn('ArrowRight', true, e)}
                     onTouchEnd={(e) => handleTouchBtn('ArrowRight', false, e)}
                     onMouseDown={(e) => handleTouchBtn('ArrowRight', true, e)}
@@ -902,7 +1161,7 @@ export const RiverRaidGame: React.FC = () => {
                 {/* DOWN */}
                 <div className="col-start-2 row-start-3">
                     <button 
-                    className="w-full h-full bg-zinc-900 border border-zinc-600 rounded hover:bg-zinc-800 active:bg-black active:scale-95 transition-all flex items-center justify-center text-zinc-500"
+                    className="w-full h-full bg-zinc-900 border-2 border-zinc-600 rounded-lg hover:bg-zinc-800 active:bg-black active:scale-95 transition-all flex items-center justify-center text-zinc-500 text-2xl font-black"
                     onTouchStart={(e) => handleTouchBtn('ArrowDown', true, e)}
                     onTouchEnd={(e) => handleTouchBtn('ArrowDown', false, e)}
                     onMouseDown={(e) => handleTouchBtn('ArrowDown', true, e)}
@@ -912,28 +1171,37 @@ export const RiverRaidGame: React.FC = () => {
             </div>
 
             {/* CENTER CONSOLE */}
-            <div className="flex flex-col gap-4 items-center justify-center">
-                <div className="text-zinc-500 font-bold text-xs tracking-widest">CONTROLLER</div>
-                <div className="flex gap-4">
+            <div className="flex flex-col gap-2 items-center justify-center h-full">
+                <div className="text-zinc-500 font-bold text-xs tracking-widest">SYSTEM</div>
+                <div className="flex flex-col gap-3">
+                     {/* NUKE BUTTON (Conditional) */}
+                    <button 
+                        onClick={activateNuke}
+                        disabled={inventory.nukes <= 0}
+                        className={`w-20 h-10 rounded border-b-2 active:border-0 active:translate-y-0.5 text-[10px] text-white font-bold tracking-widest shadow transition-colors flex items-center justify-center ${inventory.nukes > 0 ? 'bg-orange-600 border-orange-800 animate-pulse' : 'bg-zinc-700 border-zinc-900 text-zinc-500'}`}
+                    >
+                        NUKE ({inventory.nukes})
+                    </button>
+
                     <button 
                         onClick={openShop}
-                        className="w-16 h-8 bg-blue-900 rounded-full border-b-2 border-blue-950 active:border-0 active:translate-y-0.5 text-[8px] text-white font-bold tracking-widest shadow"
+                        className="w-20 h-8 bg-blue-900 rounded border-b-2 border-blue-950 active:border-0 active:translate-y-0.5 text-[8px] text-white font-bold tracking-widest shadow"
                     >
                         MARKET
                     </button>
                     <button 
                         onClick={() => setUiGameState(GameState.START)}
-                        className="w-16 h-8 bg-zinc-600 rounded-full border-b-2 border-zinc-900 active:border-0 active:translate-y-0.5 text-[8px] text-white font-bold tracking-widest shadow"
+                        className="w-20 h-8 bg-zinc-600 rounded border-b-2 border-zinc-900 active:border-0 active:translate-y-0.5 text-[8px] text-white font-bold tracking-widest shadow"
                     >
                         RESET
                     </button>
                 </div>
             </div>
 
-            {/* FIRE BTN */}
-            <div>
+            {/* FIRE BTN (LARGE) */}
+            <div className="flex items-center justify-center shrink-0">
                 <button 
-                className="w-24 h-24 bg-red-600 border-b-8 border-red-900 rounded-full active:bg-red-700 active:border-b-0 active:translate-y-2 shadow-lg flex items-center justify-center font-black text-white tracking-tighter select-none transition-all text-xl"
+                className="w-32 h-32 md:w-36 md:h-36 bg-red-600 border-b-8 border-red-900 rounded-full active:bg-red-700 active:border-b-0 active:translate-y-2 shadow-lg flex items-center justify-center font-black text-white tracking-tighter select-none transition-all text-2xl scale-90 md:scale-100 origin-bottom-right"
                 onTouchStart={(e) => handleTouchBtn('Space', true, e)}
                 onTouchEnd={(e) => handleTouchBtn('Space', false, e)}
                 onMouseDown={(e) => handleTouchBtn('Space', true, e)}

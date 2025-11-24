@@ -652,155 +652,159 @@ export const RiverRaidGame: React.FC = () => {
 
   // --- Render ---
   return (
-    <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
-      <canvas
-        ref={canvasRef}
-        width={CANVAS_WIDTH}
-        height={CANVAS_HEIGHT}
-        className="w-full h-auto object-contain max-h-[80vh] mx-auto block bg-[#228B22]"
-      />
+    <div className="relative w-full h-full bg-zinc-900 overflow-hidden flex flex-col">
+      {/* Game Container - Flexible height */}
+      <div className="relative flex-1 w-full bg-black overflow-hidden min-h-0 border-b-4 border-zinc-800">
+        <canvas
+            ref={canvasRef}
+            width={CANVAS_WIDTH}
+            height={CANVAS_HEIGHT}
+            className="w-full h-full object-contain mx-auto block bg-[#228B22]"
+        />
 
-      {uiGameState === GameState.START && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-20">
-          <h2 className="text-4xl text-yellow-400 mb-8 animate-pulse">RIVER RAID</h2>
-          <button 
-            onClick={startGame}
-            className="px-8 py-4 bg-red-600 text-white text-xl font-bold rounded hover:bg-red-500 transition-colors mb-4 border-4 border-red-800"
-          >
-            START MISSION
-          </button>
-          <div className="flex gap-4 mt-4">
-             <button onClick={() => setControlMode('KEYBOARD')} className={`px-3 py-1 text-xs ${controlMode==='KEYBOARD' ? 'bg-zinc-600 text-white':'bg-zinc-900 text-zinc-500'}`}>KEYS</button>
-             <button onClick={() => setControlMode('TOUCH')} className={`px-3 py-1 text-xs ${controlMode==='TOUCH' ? 'bg-zinc-600 text-white':'bg-zinc-900 text-zinc-500'}`}>TOUCH</button>
-          </div>
-        </div>
-      )}
-
-      {uiGameState === GameState.GAME_OVER && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-20 p-4">
-          <h2 className="text-3xl text-red-500 mb-4">GAME OVER</h2>
-          <p className="text-white mb-6">FINAL SCORE: {state.current.player.score}</p>
-          
-          <div className="flex flex-col gap-2 w-full max-w-xs mb-6">
-            <input 
-              type="text" 
-              maxLength={10}
-              placeholder="ENTER NAME" 
-              className="bg-zinc-800 border-2 border-zinc-600 p-2 text-center text-white uppercase"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value.toUpperCase())}
-            />
-            <button 
-              onClick={saveScore}
-              disabled={!inputValue || !!saveStatus}
-              className="bg-green-700 hover:bg-green-600 disabled:bg-zinc-800 text-white p-2 rounded font-bold transition-colors"
-            >
-              {saveStatus || "SAVE RECORD"}
-            </button>
-          </div>
-
-          <button 
-            onClick={startGame}
-            className="px-6 py-2 bg-yellow-600 text-black font-bold rounded hover:bg-yellow-500"
-          >
-            TRY AGAIN
-          </button>
-        </div>
-      )}
-
-      {uiGameState === GameState.LEADERBOARD_INPUT && (
-         <div className="absolute inset-0 flex flex-col items-center justify-start bg-zinc-900 z-20 p-8 overflow-y-auto">
-            <h2 className="text-2xl text-yellow-400 mb-6">TOP PILOTS</h2>
-            {loadingScores ? (
-                <p className="text-zinc-500">Loading data...</p>
-            ) : (
-                <table className="w-full max-w-md text-left text-sm">
-                    <thead>
-                        <tr className="text-zinc-500 border-b border-zinc-700">
-                            <th className="pb-2">RANK</th>
-                            <th className="pb-2">PILOT</th>
-                            <th className="pb-2 text-right">SCORE</th>
-                        </tr>
-                    </thead>
-                    <tbody className="font-mono">
-                        {leaderboard.map((entry, idx) => (
-                            <tr key={idx} className={idx < 3 ? "text-yellow-200" : "text-zinc-300"}>
-                                <td className="py-2 text-zinc-500">#{idx + 1}</td>
-                                <td className="py-2">{entry.name}</td>
-                                <td className="py-2 text-right text-green-400">{entry.score}</td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            )}
+        {uiGameState === GameState.START && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-20">
+            <h2 className="text-4xl text-yellow-400 mb-8 animate-pulse">RIVER RAID</h2>
             <button 
                 onClick={startGame}
-                className="mt-8 px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded"
+                className="px-8 py-4 bg-red-600 text-white text-xl font-bold rounded hover:bg-red-500 transition-colors mb-4 border-4 border-red-800"
             >
-                NEW MISSION
+                START MISSION
             </button>
-         </div>
-      )}
+            <div className="flex gap-4 mt-4">
+                <button onClick={() => setControlMode('KEYBOARD')} className={`px-3 py-1 text-xs ${controlMode==='KEYBOARD' ? 'bg-zinc-600 text-white':'bg-zinc-900 text-zinc-500'}`}>KEYS</button>
+                <button onClick={() => setControlMode('TOUCH')} className={`px-3 py-1 text-xs ${controlMode==='TOUCH' ? 'bg-zinc-600 text-white':'bg-zinc-900 text-zinc-500'}`}>TOUCH</button>
+            </div>
+            </div>
+        )}
 
-      {controlMode === 'TOUCH' && uiGameState === GameState.PLAYING && (
-          <>
-            {/* Directional Buttons (D-Pad) */}
-            <div className="absolute bottom-4 left-4 grid grid-cols-3 gap-2 z-30 opacity-70 scale-90 origin-bottom-left md:scale-100">
-                 {/* UP (Accelerate) */}
+        {uiGameState === GameState.GAME_OVER && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-20 p-4">
+            <h2 className="text-3xl text-red-500 mb-4">GAME OVER</h2>
+            <p className="text-white mb-6">FINAL SCORE: {state.current.player.score}</p>
+            
+            <div className="flex flex-col gap-2 w-full max-w-xs mb-6">
+                <input 
+                type="text" 
+                maxLength={10}
+                placeholder="ENTER NAME" 
+                className="bg-zinc-800 border-2 border-zinc-600 p-2 text-center text-white uppercase"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value.toUpperCase())}
+                />
+                <button 
+                onClick={saveScore}
+                disabled={!inputValue || !!saveStatus}
+                className="bg-green-700 hover:bg-green-600 disabled:bg-zinc-800 text-white p-2 rounded font-bold transition-colors"
+                >
+                {saveStatus || "SAVE RECORD"}
+                </button>
+            </div>
+
+            <button 
+                onClick={startGame}
+                className="px-6 py-2 bg-yellow-600 text-black font-bold rounded hover:bg-yellow-500"
+            >
+                TRY AGAIN
+            </button>
+            </div>
+        )}
+
+        {uiGameState === GameState.LEADERBOARD_INPUT && (
+            <div className="absolute inset-0 flex flex-col items-center justify-start bg-zinc-900 z-20 p-8 overflow-y-auto">
+                <h2 className="text-2xl text-yellow-400 mb-6">TOP PILOTS</h2>
+                {loadingScores ? (
+                    <p className="text-zinc-500">Loading data...</p>
+                ) : (
+                    <table className="w-full max-w-md text-left text-sm">
+                        <thead>
+                            <tr className="text-zinc-500 border-b border-zinc-700">
+                                <th className="pb-2">RANK</th>
+                                <th className="pb-2">PILOT</th>
+                                <th className="pb-2 text-right">SCORE</th>
+                            </tr>
+                        </thead>
+                        <tbody className="font-mono">
+                            {leaderboard.map((entry, idx) => (
+                                <tr key={idx} className={idx < 3 ? "text-yellow-200" : "text-zinc-300"}>
+                                    <td className="py-2 text-zinc-500">#{idx + 1}</td>
+                                    <td className="py-2">{entry.name}</td>
+                                    <td className="py-2 text-right text-green-400">{entry.score}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                )}
+                <button 
+                    onClick={startGame}
+                    className="mt-8 px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded"
+                >
+                    NEW MISSION
+                </button>
+            </div>
+        )}
+      </div>
+
+      {/* Separate Control Panel (Outside Canvas) */}
+      {controlMode === 'TOUCH' && (
+        <div className="shrink-0 h-[180px] bg-zinc-900 p-4 flex items-center justify-between select-none w-full max-w-[600px] mx-auto border-t-2 border-zinc-800 shadow-[inset_0_10px_20px_rgba(0,0,0,0.5)]">
+            {/* D-Pad */}
+            <div className="grid grid-cols-3 gap-2">
+                {/* UP */}
                 <div className="col-start-2">
-                     <button 
-                        className="w-14 h-14 bg-zinc-800 border-2 border-zinc-500 rounded-t-xl active:bg-zinc-600 active:border-yellow-400 flex items-center justify-center text-2xl select-none"
-                        onTouchStart={(e) => handleTouchBtn('ArrowUp', true, e)}
-                        onTouchEnd={(e) => handleTouchBtn('ArrowUp', false, e)}
-                        onMouseDown={(e) => handleTouchBtn('ArrowUp', true, e)}
-                        onMouseUp={(e) => handleTouchBtn('ArrowUp', false, e)}
-                     >▲</button>
+                    <button 
+                    className="w-14 h-14 bg-zinc-800 border-b-4 border-zinc-950 rounded-lg active:bg-zinc-700 active:border-b-0 active:translate-y-1 flex items-center justify-center text-2xl text-zinc-400 hover:text-white transition-all"
+                    onTouchStart={(e) => handleTouchBtn('ArrowUp', true, e)}
+                    onTouchEnd={(e) => handleTouchBtn('ArrowUp', false, e)}
+                    onMouseDown={(e) => handleTouchBtn('ArrowUp', true, e)}
+                    onMouseUp={(e) => handleTouchBtn('ArrowUp', false, e)}
+                    >▲</button>
                 </div>
                 {/* LEFT */}
                 <div className="col-start-1 row-start-2">
-                     <button 
-                        className="w-14 h-14 bg-zinc-800 border-2 border-zinc-500 rounded-l-xl active:bg-zinc-600 active:border-yellow-400 flex items-center justify-center text-2xl select-none"
-                        onTouchStart={(e) => handleTouchBtn('ArrowLeft', true, e)}
-                        onTouchEnd={(e) => handleTouchBtn('ArrowLeft', false, e)}
-                        onMouseDown={(e) => handleTouchBtn('ArrowLeft', true, e)}
-                        onMouseUp={(e) => handleTouchBtn('ArrowLeft', false, e)}
-                     >◀</button>
+                    <button 
+                    className="w-14 h-14 bg-zinc-800 border-b-4 border-zinc-950 rounded-lg active:bg-zinc-700 active:border-b-0 active:translate-y-1 flex items-center justify-center text-2xl text-zinc-400 hover:text-white transition-all"
+                    onTouchStart={(e) => handleTouchBtn('ArrowLeft', true, e)}
+                    onTouchEnd={(e) => handleTouchBtn('ArrowLeft', false, e)}
+                    onMouseDown={(e) => handleTouchBtn('ArrowLeft', true, e)}
+                    onMouseUp={(e) => handleTouchBtn('ArrowLeft', false, e)}
+                    >◀</button>
                 </div>
                 {/* RIGHT */}
                 <div className="col-start-3 row-start-2">
-                     <button 
-                        className="w-14 h-14 bg-zinc-800 border-2 border-zinc-500 rounded-r-xl active:bg-zinc-600 active:border-yellow-400 flex items-center justify-center text-2xl select-none"
-                        onTouchStart={(e) => handleTouchBtn('ArrowRight', true, e)}
-                        onTouchEnd={(e) => handleTouchBtn('ArrowRight', false, e)}
-                        onMouseDown={(e) => handleTouchBtn('ArrowRight', true, e)}
-                        onMouseUp={(e) => handleTouchBtn('ArrowRight', false, e)}
-                     >▶</button>
+                    <button 
+                    className="w-14 h-14 bg-zinc-800 border-b-4 border-zinc-950 rounded-lg active:bg-zinc-700 active:border-b-0 active:translate-y-1 flex items-center justify-center text-2xl text-zinc-400 hover:text-white transition-all"
+                    onTouchStart={(e) => handleTouchBtn('ArrowRight', true, e)}
+                    onTouchEnd={(e) => handleTouchBtn('ArrowRight', false, e)}
+                    onMouseDown={(e) => handleTouchBtn('ArrowRight', true, e)}
+                    onMouseUp={(e) => handleTouchBtn('ArrowRight', false, e)}
+                    >▶</button>
                 </div>
-                {/* DOWN (Decelerate) */}
+                {/* DOWN */}
                 <div className="col-start-2 row-start-3">
-                     <button 
-                        className="w-14 h-14 bg-zinc-800 border-2 border-zinc-500 rounded-b-xl active:bg-zinc-600 active:border-yellow-400 flex items-center justify-center text-2xl select-none"
-                        onTouchStart={(e) => handleTouchBtn('ArrowDown', true, e)}
-                        onTouchEnd={(e) => handleTouchBtn('ArrowDown', false, e)}
-                        onMouseDown={(e) => handleTouchBtn('ArrowDown', true, e)}
-                        onMouseUp={(e) => handleTouchBtn('ArrowDown', false, e)}
-                     >▼</button>
+                    <button 
+                    className="w-14 h-14 bg-zinc-800 border-b-4 border-zinc-950 rounded-lg active:bg-zinc-700 active:border-b-0 active:translate-y-1 flex items-center justify-center text-2xl text-zinc-400 hover:text-white transition-all"
+                    onTouchStart={(e) => handleTouchBtn('ArrowDown', true, e)}
+                    onTouchEnd={(e) => handleTouchBtn('ArrowDown', false, e)}
+                    onMouseDown={(e) => handleTouchBtn('ArrowDown', true, e)}
+                    onMouseUp={(e) => handleTouchBtn('ArrowDown', false, e)}
+                    >▼</button>
                 </div>
             </div>
 
             {/* Fire Button */}
-            <div className="absolute bottom-6 right-6 z-30 opacity-70 scale-90 origin-bottom-right md:scale-100">
-                 <button 
-                    className="w-20 h-20 bg-red-700/90 border-4 border-red-900 rounded-full active:bg-red-500 active:scale-95 shadow-xl flex items-center justify-center font-black text-white tracking-tighter select-none"
-                    onTouchStart={(e) => handleTouchBtn('Space', true, e)}
-                    onTouchEnd={(e) => handleTouchBtn('Space', false, e)}
-                    onMouseDown={(e) => handleTouchBtn('Space', true, e)}
-                    onMouseUp={(e) => handleTouchBtn('Space', false, e)}
-                 >
-                    FIRE
-                 </button>
+            <div>
+                <button 
+                className="w-24 h-24 bg-red-700 border-b-8 border-red-900 rounded-full active:bg-red-600 active:border-b-0 active:translate-y-2 shadow-lg flex items-center justify-center font-black text-white tracking-tighter select-none transition-all text-xl"
+                onTouchStart={(e) => handleTouchBtn('Space', true, e)}
+                onTouchEnd={(e) => handleTouchBtn('Space', false, e)}
+                onMouseDown={(e) => handleTouchBtn('Space', true, e)}
+                onMouseUp={(e) => handleTouchBtn('Space', false, e)}
+                >
+                FIRE
+                </button>
             </div>
-          </>
+        </div>
       )}
     </div>
   );

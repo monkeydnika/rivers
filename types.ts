@@ -45,6 +45,7 @@ export enum EnemyType {
   SHIP,
   HELICOPTER,
   JET,
+  KAMIKAZE, // Yeni Hızlı Düşman
   FUEL_DEPOT,
   BRIDGE,
   LIFE_ORB, // Can toplamak için

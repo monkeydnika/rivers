@@ -74,8 +74,10 @@ export const RiverRaidGame: React.FC = () => {
     level: 1,
     lastBridgePos: 0,
     isBossActive: false,
+    bossCount: 0,
     lastShotTime: 0,
-    nukeFlashTimer: 0
+    nukeFlashTimer: 0,
+    wasPlayingBeforeShop: false // Track state to resume correctly
   });
 
   // --- Initialization & IP Fetch ---
@@ -119,7 +121,7 @@ export const RiverRaidGame: React.FC = () => {
   };
 
   // --- Sound Synthesis ---
-  const playSound = (type: 'shoot' | 'explosion' | 'fuel' | 'coin' | 'buy' | 'nuke' | 'life') => {
+  const playSound = (type: 'shoot' | 'explosion' | 'fuel' | 'coin' | 'buy' | 'nuke' | 'life' | 'boss_spawn') => {
     if (!audioCtxRef.current) return;
     const ctx = audioCtxRef.current;
     if (ctx.state === 'suspended') ctx.resume();
@@ -188,6 +190,14 @@ export const RiverRaidGame: React.FC = () => {
         gain.gain.linearRampToValueAtTime(0, now + 1.0);
         osc.start(now);
         osc.stop(now + 1.0);
+    } else if (type === 'boss_spawn') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(100, now);
+        osc.frequency.linearRampToValueAtTime(50, now + 2.0);
+        gain.gain.setValueAtTime(0.5, now);
+        gain.gain.linearRampToValueAtTime(0, now + 2.0);
+        osc.start(now);
+        osc.stop(now + 2.0);
     }
   };
 
@@ -198,6 +208,12 @@ export const RiverRaidGame: React.FC = () => {
       if (uiGameState === GameState.START || uiGameState === GameState.GAME_OVER) {
          if (e.code === 'KeyR' || e.code === 'Enter') startGame();
       }
+      
+      // TOGGLE SHOP ANYTIME
+      if (e.code === 'KeyM') {
+          toggleShop();
+      }
+
       if (uiGameState === GameState.PLAYING && (e.code === 'KeyN')) {
           activateNuke();
       }
@@ -227,13 +243,20 @@ export const RiverRaidGame: React.FC = () => {
           state.current.player.nukes--;
           setInventory(prev => ({ ...prev, nukes: Math.max(0, prev.nukes - 1) }));
           
-          // Kill all enemies on screen
           state.current.enemies.forEach(e => {
-              e.hp = 0; 
-              createExplosion(e.x + e.width/2, e.y + e.height/2, 'white', 20);
+              if (e.type === EnemyType.BOSS) {
+                  e.hp -= 5;
+                  if (e.hp <= 0) {
+                      e.markedForDeletion = true;
+                      state.current.isBossActive = false;
+                      createExplosion(e.x + e.width/2, e.y + e.height/2, 'purple', 50);
+                  }
+              } else {
+                e.hp = 0; 
+                createExplosion(e.x + e.width/2, e.y + e.height/2, 'white', 20);
+              }
           });
           
-          // Visual flash
           state.current.nukeFlashTimer = 10;
           playSound('nuke');
       }
@@ -272,8 +295,10 @@ export const RiverRaidGame: React.FC = () => {
       level: 1,
       lastBridgePos: 0,
       isBossActive: false,
+      bossCount: 0,
       lastShotTime: 0,
-      nukeFlashTimer: 0
+      nukeFlashTimer: 0,
+      wasPlayingBeforeShop: false
     };
 
     // Reset single-use items after applying
@@ -294,16 +319,14 @@ export const RiverRaidGame: React.FC = () => {
   const generateRiverSegment = (y: number) => {
     const segments = state.current.riverSegments;
     let centerX = CANVAS_WIDTH / 2;
-    // Increased base width for a much wider river (Was 450)
     let width = 520; 
 
     if (segments.length > 0) {
         const last = segments[segments.length - 1];
-        const time = state.current.frameCount * 0.005; // Slower meander
+        const time = state.current.frameCount * 0.005; 
         const noise = Math.sin(time) * 30 + Math.sin(time * 0.5) * 20;
         centerX = CANVAS_WIDTH / 2 + noise;
         
-        // Massive river width variation (Was 400 base)
         width = 480 + Math.sin(time * 0.3) * 50; 
         
         centerX = Math.max(width/2 + 20, Math.min(CANVAS_WIDTH - width/2 - 20, centerX));
@@ -324,8 +347,31 @@ export const RiverRaidGame: React.FC = () => {
     }
   };
 
+  const spawnBoss = () => {
+      if (state.current.isBossActive) return;
+
+      state.current.isBossActive = true;
+      state.current.bossCount++;
+      const bossHp = 3 + (state.current.bossCount - 1) * 2; 
+      
+      state.current.enemies.push({
+          type: EnemyType.BOSS,
+          x: CANVAS_WIDTH / 2 - 40,
+          y: -100, 
+          width: 80,
+          height: 60,
+          vx: 2,
+          vy: 0,
+          shootTimer: 60, 
+          hp: bossHp,
+          maxHp: bossHp,
+          markedForDeletion: false
+      });
+      playSound('boss_spawn');
+  };
+
   const spawnEnemy = (y: number) => {
-     if (state.current.isBossActive) return;
+     if (state.current.isBossActive) return; 
 
      const segments = state.current.riverSegments;
      const segment = segments[segments.length - 1]; 
@@ -333,8 +379,19 @@ export const RiverRaidGame: React.FC = () => {
      
      const isNarrow = segment.width < 350; 
 
-     // DENSITY CONTROL:
-     if (Math.random() > 0.3) return; 
+     // --- PROGRESSIVE DIFFICULTY LOGIC (UPDATED) ---
+     // 15 seconds = 900 frames.
+     const frames = state.current.frameCount;
+     const difficultyStep = Math.floor(frames / 900); 
+     
+     // Start weak (5%). Every 15 seconds, increase difficulty by 10%.
+     // Formula: 0.05 * (1.10 ^ difficultyStep)
+     let spawnChance = 0.05 * Math.pow(1.10, difficultyStep);
+     
+     // Cap max spawn chance at 70% to avoid impossible walls
+     if (spawnChance > 0.70) spawnChance = 0.70;
+
+     if (Math.random() > spawnChance) return; 
 
      const minX = segment.centerX - segment.width / 2 + 40; 
      const maxX = segment.centerX + segment.width / 2 - 40;
@@ -342,19 +399,6 @@ export const RiverRaidGame: React.FC = () => {
 
      let type = EnemyType.SHIP;
      let hp = 1;
-
-     // Bridges REMOVED per user request
-     /*
-     if (state.current.distanceTraveled - state.current.lastBridgePos > 3000 && !isNarrow) {
-         type = EnemyType.BRIDGE;
-         hp = 10;
-         state.current.lastBridgePos = state.current.distanceTraveled;
-         state.current.enemies.push({
-            type, x: segment.centerX - 64, y, width: 128, height: 40, vx: 0, vy: 0, shootTimer: 0, hp, maxHp: hp, markedForDeletion: false
-         });
-         return;
-     }
-     */
 
      const rand = Math.random();
 
@@ -368,29 +412,39 @@ export const RiverRaidGame: React.FC = () => {
         type = EnemyType.LIFE_ORB;
         hp = 1;
      } else if (rand < 0.60) {
-         // EMPTY SLOT
-         return;
-     } else if (rand < 0.85) {
-         // HELI
+         return; // Empty slot
+     } else if (rand < 0.80) {
          if (isNarrow) return;
          type = EnemyType.HELICOPTER;
-         hp = 2;
-     } else {
-         // JET
+         hp = 1; 
+     } else if (rand < 0.95) {
          if (isNarrow) return;
          type = EnemyType.JET;
          hp = 1;
+     } else {
+         if (isNarrow) return;
+         type = EnemyType.KAMIKAZE;
+         hp = 1;
      }
 
+     // Determine Velocities
+     let vx = 0;
+     if (type === EnemyType.HELICOPTER) {
+         vx = Math.random() > 0.5 ? 2 : -2;
+     } else if (type === EnemyType.JET) {
+         vx = Math.random() > 0.5 ? 3 : -3; 
+     }
+     
      state.current.enemies.push({
          type,
          x,
          y,
          width: type === EnemyType.FUEL_DEPOT ? 24 : (type === EnemyType.LIFE_ORB ? 24 : 32),
-         height: type === EnemyType.FUEL_DEPOT ? 48 : (type === EnemyType.LIFE_ORB ? 24 : 32),
-         vx: type === EnemyType.HELICOPTER ? (Math.random() > 0.5 ? 2 : -2) : 0,
-         vy: 0,
-         shootTimer: 0,
+         height: type === EnemyType.FUEL_DEPOT ? 48 : (type === EnemyType.LIFE_ORB ? 24 : (type === EnemyType.KAMIKAZE ? 40 : 32)),
+         vx: vx,
+         vy: type === EnemyType.KAMIKAZE ? 8 : 0, 
+         // Initialize randomized shoot timer for regular enemies
+         shootTimer: Math.random() * 120 + 60, // 1-3 seconds start delay
          hp,
          maxHp: hp,
          markedForDeletion: false
@@ -414,8 +468,16 @@ export const RiverRaidGame: React.FC = () => {
   };
 
   const update = () => {
+    // If shop is open during gameplay, do NOT update game logic
+    if (state.current.gameState === GameState.SHOP) return;
+
     const s = state.current;
     s.frameCount++;
+
+    // --- MINI BOSS TIMER ---
+    if (s.frameCount > 0 && s.frameCount % 3600 === 0) {
+        spawnBoss();
+    }
 
     if (s.nukeFlashTimer > 0) s.nukeFlashTimer--;
 
@@ -430,7 +492,7 @@ export const RiverRaidGame: React.FC = () => {
     const keys = s.keys;
     let dx = 0;
 
-    // Keyboard / Touch Button movement
+    // Movement
     if (keys['ArrowLeft']) dx = -5;
     if (keys['ArrowRight']) dx = 5;
     
@@ -504,21 +566,74 @@ export const RiverRaidGame: React.FC = () => {
         }
     }
 
+    // Check if Enemies can shoot (After 90 seconds = 5400 frames)
+    const canEnemiesShoot = s.frameCount > 5400;
+
     // Enemies & Pickups
     s.enemies.forEach(e => {
-        e.y += s.scrollSpeed;
-        e.x += e.vx;
+        // --- BOSS LOGIC ---
+        if (e.type === EnemyType.BOSS) {
+            if (e.y < 80) {
+                e.y += 2;
+            } else {
+                e.y = 80; 
+                e.x += Math.sin(s.frameCount * 0.05) * 3;
+                if (e.x < 20) e.x = 20;
+                if (e.x > CANVAS_WIDTH - e.width - 20) e.x = CANVAS_WIDTH - e.width - 20;
+            }
 
-        if (e.type === EnemyType.HELICOPTER) {
+            e.shootTimer--;
+            if (e.shootTimer <= 0) {
+                e.shootTimer = 90; 
+                const bx = e.x + e.width / 2 - 4;
+                const by = e.y + e.height;
+                s.bullets.push({ x: bx, y: by, width: 8, height: 16, vx: 0, vy: 6, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                s.bullets.push({ x: bx, y: by, width: 8, height: 16, vx: -3, vy: 5, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                s.bullets.push({ x: bx, y: by, width: 8, height: 16, vx: 3, vy: 5, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+            }
+
+        } else if (e.type === EnemyType.KAMIKAZE) {
+             e.y += e.vy + s.scrollSpeed; 
+        } else {
+             // --- REGULAR ENEMY MOVEMENT ---
+             e.y += s.scrollSpeed;
+             
+             if (e.type === EnemyType.JET) {
+                 e.y += 2; 
+             }
+             e.x += e.vx;
+
+             // --- REGULAR ENEMY SHOOTING ---
+             if (canEnemiesShoot && (e.type === EnemyType.HELICOPTER || e.type === EnemyType.JET)) {
+                 e.shootTimer--;
+                 if (e.shootTimer <= 0) {
+                     // Reset timer (Randomized so they don't machine gun)
+                     e.shootTimer = 180 + Math.random() * 60; 
+                     
+                     // Shoot straight down
+                     const bx = e.x + e.width / 2 - 4;
+                     const by = e.y + e.height;
+                     s.bullets.push({ x: bx, y: by, width: 6, height: 12, vx: 0, vy: 5, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                 }
+             }
+        }
+
+        // Bouncing
+        if (e.type === EnemyType.HELICOPTER || e.type === EnemyType.JET) {
              const seg = s.riverSegments.find(seg => e.y > seg.y && e.y < seg.y + RIVER_SEGMENT_HEIGHT);
              if (seg) {
-                 if (e.x < seg.centerX - seg.width/2 + 20) e.vx = Math.abs(e.vx);
-                 if (e.x + e.width > seg.centerX + seg.width/2 - 20) e.vx = -Math.abs(e.vx);
+                 if (e.x < seg.centerX - seg.width/2 + 20) {
+                     e.x = seg.centerX - seg.width/2 + 20; 
+                     e.vx = Math.abs(e.vx); 
+                 }
+                 if (e.x + e.width > seg.centerX + seg.width/2 - 20) {
+                     e.x = seg.centerX + seg.width/2 - 20 - e.width; 
+                     e.vx = -Math.abs(e.vx); 
+                 }
              }
         }
         
-        if (e.type === EnemyType.JET) e.y += 2; 
-
+        // Collisions
         if (e.type === EnemyType.BRIDGE && !e.markedForDeletion) {
              if (checkCollision(s.player, e) && !s.player.isInvulnerable) killPlayer("Crashed into bridge");
         } else if (e.type === EnemyType.FUEL_DEPOT) {
@@ -538,27 +653,31 @@ export const RiverRaidGame: React.FC = () => {
                 s.player.lives += 1;
                 e.markedForDeletion = true;
                 playSound('life');
-                // Floating text effect could go here
             }
         } else if (e.type !== EnemyType.BRIDGE) {
             if (checkCollision(s.player, e)) {
                 if (s.player.isInvulnerable) {
-                     e.markedForDeletion = true;
-                     createExplosion(e.x, e.y, 'orange', 10);
+                     if (e.type !== EnemyType.BOSS) {
+                        e.markedForDeletion = true;
+                        createExplosion(e.x, e.y, 'orange', 10);
+                     }
                 } else {
                     killPlayer("Crashed into enemy");
-                    e.markedForDeletion = true;
-                    createExplosion(e.x, e.y, 'orange', 10);
+                    if (e.type !== EnemyType.BOSS) {
+                        e.markedForDeletion = true;
+                        createExplosion(e.x, e.y, 'orange', 10);
+                    }
                 }
             }
         }
 
-        if (e.y > CANVAS_HEIGHT) e.markedForDeletion = true;
+        if (e.y > CANVAS_HEIGHT && e.type !== EnemyType.BOSS) {
+            e.markedForDeletion = true;
+        }
     });
 
     // Bullets
     s.bullets.forEach(b => {
-        // HELIX MOVEMENT
         if (b.pattern === 'helix_left') {
              b.x = (b.initialX || 0) + Math.sin(b.y * 0.05) * 20;
         } else if (b.pattern === 'helix_right') {
@@ -568,27 +687,47 @@ export const RiverRaidGame: React.FC = () => {
         }
         b.y += b.vy;
 
-        s.enemies.forEach(e => {
-            if (!e.markedForDeletion && !b.markedForDeletion && checkCollision(b, e)) {
-                if (e.type === EnemyType.GOLD_COIN || e.type === EnemyType.LIFE_ORB) return; 
-
-                b.markedForDeletion = true;
-                e.hp--;
-                if (e.hp <= 0) {
-                    e.markedForDeletion = true;
-                    if (e.type === EnemyType.BRIDGE) {
-                        s.player.score += 500;
-                        createExplosion(e.x + e.width/2, e.y + e.height/2, 'gray', 30);
-                    } else if (e.type === EnemyType.FUEL_DEPOT) {
-                        s.player.score += 80;
-                        createExplosion(e.x, e.y, 'red', 15);
-                    } else {
-                        s.player.score += 100;
-                        createExplosion(e.x, e.y, 'orange', 10);
-                    }
+        if (b.isEnemy) {
+            if (!b.markedForDeletion && checkCollision(b, s.player)) {
+                if (!s.player.isInvulnerable) {
+                    b.markedForDeletion = true;
+                    killPlayer("Shot by Enemy");
                 }
             }
-        });
+        } else {
+            s.enemies.forEach(e => {
+                if (!e.markedForDeletion && !b.markedForDeletion && checkCollision(b, e)) {
+                    if (e.type === EnemyType.GOLD_COIN || e.type === EnemyType.LIFE_ORB) return; 
+
+                    b.markedForDeletion = true;
+                    e.hp--;
+                    if (e.hp <= 0) {
+                        e.markedForDeletion = true;
+                        if (e.type === EnemyType.BRIDGE) {
+                            s.player.score += 500;
+                            createExplosion(e.x + e.width/2, e.y + e.height/2, 'gray', 30);
+                        } else if (e.type === EnemyType.FUEL_DEPOT) {
+                            s.player.score += 80;
+                            createExplosion(e.x, e.y, 'red', 15);
+                        } else if (e.type === EnemyType.BOSS) {
+                            s.player.score += 2000;
+                            s.player.gold += 25; 
+                            s.isBossActive = false;
+                            createExplosion(e.x + e.width/2, e.y + e.height/2, 'purple', 100);
+                            playSound('explosion');
+                        } else if (e.type === EnemyType.KAMIKAZE) {
+                            s.player.score += 300;
+                            createExplosion(e.x, e.y, 'white', 15);
+                        } else {
+                            s.player.score += 100;
+                            createExplosion(e.x, e.y, 'orange', 10);
+                        }
+                    } else {
+                        createExplosion(e.x + e.width/2, e.y + e.height/2, 'yellow', 2);
+                    }
+                }
+            });
+        }
 
         if (b.y < 0 || b.y > CANVAS_HEIGHT) b.markedForDeletion = true;
     });
@@ -600,7 +739,6 @@ export const RiverRaidGame: React.FC = () => {
         if (p.life <= 0) p.markedForDeletion = true;
     });
 
-    // Cleanup
     s.enemies = s.enemies.filter(e => !e.markedForDeletion);
     s.bullets = s.bullets.filter(b => !b.markedForDeletion);
     s.particles = s.particles.filter(p => !p.markedForDeletion);
@@ -616,22 +754,18 @@ export const RiverRaidGame: React.FC = () => {
   };
 
   const killPlayer = (reason: string) => {
-      // Check for extra lives
       if (state.current.player.lives > 1) {
           console.log("Life Lost:", reason);
           state.current.player.lives--;
           
-          // Reset position but keep progress
           state.current.player.x = CANVAS_WIDTH / 2 - PLAYER_WIDTH / 2;
           state.current.player.y = CANVAS_HEIGHT - 120;
           state.current.player.fuel = MAX_FUEL;
           state.current.player.isInvulnerable = true;
-          state.current.player.invulnerableTimer = 180; // 3 seconds grace
+          state.current.player.invulnerableTimer = 180; 
           
-          // Clear bullets to be fair
           state.current.bullets = [];
           
-          // Small explosion effect
           createExplosion(state.current.player.x, state.current.player.y, 'yellow', 20);
           
           return;
@@ -641,16 +775,14 @@ export const RiverRaidGame: React.FC = () => {
       state.current.gameState = GameState.GAME_OVER;
       setUiGameState(GameState.GAME_OVER);
       
-      // Save collected gold to permanent storage
       addGold(state.current.player.gold);
-      setPurchasedWeapon(WeaponType.SINGLE); // Reset weapon on death
+      setPurchasedWeapon(WeaponType.SINGLE); 
       
       cancelAnimationFrame(requestRef.current);
   };
 
   const draw = (ctx: CanvasRenderingContext2D) => {
-    // Clear
-    ctx.fillStyle = '#228B22'; // Grass color
+    ctx.fillStyle = '#228B22'; 
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
     const s = state.current;
@@ -660,11 +792,9 @@ export const RiverRaidGame: React.FC = () => {
     ctx.beginPath();
     if (s.riverSegments.length > 0) {
         ctx.moveTo(s.riverSegments[0].centerX - s.riverSegments[0].width / 2, s.riverSegments[0].y);
-        // Left bank
         for (const seg of s.riverSegments) {
             ctx.lineTo(seg.centerX - seg.width / 2, seg.y);
         }
-        // Right bank (reverse)
         for (let i = s.riverSegments.length - 1; i >= 0; i--) {
             const seg = s.riverSegments[i];
             ctx.lineTo(seg.centerX + seg.width / 2, seg.y);
@@ -672,7 +802,6 @@ export const RiverRaidGame: React.FC = () => {
     }
     ctx.fill();
 
-    // Decorations
     s.decorations.forEach(d => {
         if (d.type === DecorationType.TREE) {
             ctx.fillStyle = '#006400';
@@ -687,7 +816,6 @@ export const RiverRaidGame: React.FC = () => {
 
     // Player
     ctx.fillStyle = s.player.isInvulnerable ? (Math.floor(Date.now() / 100) % 2 === 0 ? 'cyan' : 'yellow') : 'yellow';
-    // Simple jet shape
     ctx.beginPath();
     ctx.moveTo(s.player.x + s.player.width/2, s.player.y);
     ctx.lineTo(s.player.x + s.player.width, s.player.y + s.player.height);
@@ -696,7 +824,6 @@ export const RiverRaidGame: React.FC = () => {
     ctx.closePath();
     ctx.fill();
 
-    // Shield Effect
     if (s.player.isInvulnerable) {
         ctx.strokeStyle = 'cyan';
         ctx.lineWidth = 2;
@@ -710,10 +837,12 @@ export const RiverRaidGame: React.FC = () => {
         if (e.type === EnemyType.SHIP) ctx.fillStyle = 'white';
         else if (e.type === EnemyType.HELICOPTER) ctx.fillStyle = 'black';
         else if (e.type === EnemyType.JET) ctx.fillStyle = 'red';
+        else if (e.type === EnemyType.KAMIKAZE) ctx.fillStyle = '#2F4F4F';
         else if (e.type === EnemyType.FUEL_DEPOT) ctx.fillStyle = '#FF4500';
         else if (e.type === EnemyType.BRIDGE) ctx.fillStyle = '#333';
         else if (e.type === EnemyType.GOLD_COIN) ctx.fillStyle = 'gold';
-        else if (e.type === EnemyType.LIFE_ORB) ctx.fillStyle = '#FF1493'; // Deep Pink for Life
+        else if (e.type === EnemyType.LIFE_ORB) ctx.fillStyle = '#FF1493'; 
+        else if (e.type === EnemyType.BOSS) ctx.fillStyle = '#800080';
 
         if (e.type === EnemyType.GOLD_COIN) {
             ctx.beginPath();
@@ -723,7 +852,6 @@ export const RiverRaidGame: React.FC = () => {
             ctx.lineWidth = 2;
             ctx.stroke();
         } else if (e.type === EnemyType.LIFE_ORB) {
-            // Draw Heart Shape
             const cx = e.x + e.width/2;
             const cy = e.y + e.height/2;
             ctx.beginPath();
@@ -731,11 +859,40 @@ export const RiverRaidGame: React.FC = () => {
             ctx.bezierCurveTo(cx - 6, cy - 6, cx - 12, cy + 2, cx, cy + 12);
             ctx.bezierCurveTo(cx + 12, cy + 2, cx + 6, cy - 6, cx, cy + 6);
             ctx.fill();
-            // Glow
             ctx.shadowBlur = 10;
             ctx.shadowColor = "pink";
             ctx.stroke();
             ctx.shadowBlur = 0;
+        } else if (e.type === EnemyType.BOSS) {
+            const cx = e.x + e.width/2;
+            const cy = e.y + e.height/2;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - 20);
+            ctx.lineTo(cx + 30, cy);
+            ctx.lineTo(cx + 40, cy + 20);
+            ctx.lineTo(cx, cy + 30);
+            ctx.lineTo(cx - 40, cy + 20);
+            ctx.lineTo(cx - 30, cy);
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillStyle = 'red';
+            ctx.fillRect(e.x, e.y - 10, e.width, 5);
+            ctx.fillStyle = 'green';
+            ctx.fillRect(e.x, e.y - 10, e.width * (e.hp / e.maxHp), 5);
+        } else if (e.type === EnemyType.KAMIKAZE) {
+            const cx = e.x + e.width/2;
+            const cy = e.y + e.height/2;
+            ctx.beginPath();
+            ctx.moveTo(cx, e.y); 
+            ctx.lineTo(e.x + e.width, e.y + e.height); 
+            ctx.lineTo(cx, e.y + e.height - 10); 
+            ctx.lineTo(e.x, e.y + e.height); 
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillStyle = 'orange';
+            ctx.beginPath();
+            ctx.arc(cx, e.y + e.height, 4, 0, Math.PI * 2);
+            ctx.fill();
         } else {
             ctx.fillRect(e.x, e.y, e.width, e.height);
         }
@@ -749,18 +906,24 @@ export const RiverRaidGame: React.FC = () => {
 
     // Bullets
     s.bullets.forEach(b => {
-        if (b.pattern === 'helix_left' || b.pattern === 'helix_right') {
-            ctx.fillStyle = '#00FF00'; // Matrix green for helix
-            ctx.beginPath();
-            ctx.arc(b.x + b.width/2, b.y + b.height/2, 5, 0, Math.PI * 2);
-            ctx.fill();
+        if (b.isEnemy) {
+             ctx.fillStyle = '#FF00FF'; 
+             ctx.beginPath();
+             ctx.arc(b.x + b.width/2, b.y + b.height/2, 6, 0, Math.PI * 2);
+             ctx.fill();
         } else {
-            ctx.fillStyle = 'yellow';
-            ctx.fillRect(b.x, b.y, b.width, b.height);
+            if (b.pattern === 'helix_left' || b.pattern === 'helix_right') {
+                ctx.fillStyle = '#00FF00'; 
+                ctx.beginPath();
+                ctx.arc(b.x + b.width/2, b.y + b.height/2, 5, 0, Math.PI * 2);
+                ctx.fill();
+            } else {
+                ctx.fillStyle = 'yellow';
+                ctx.fillRect(b.x, b.y, b.width, b.height);
+            }
         }
     });
 
-    // Particles
     s.particles.forEach(p => {
         ctx.fillStyle = p.color;
         ctx.globalAlpha = p.life;
@@ -770,7 +933,6 @@ export const RiverRaidGame: React.FC = () => {
         ctx.globalAlpha = 1.0;
     });
 
-    // Nuke Flash
     if (s.nukeFlashTimer > 0) {
         ctx.fillStyle = `rgba(255, 255, 255, ${s.nukeFlashTimer / 10})`;
         ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -790,17 +952,14 @@ export const RiverRaidGame: React.FC = () => {
     ctx.fillStyle = 'white';
     ctx.fillText(`SCORE: ${s.player.score}`, 10, 30);
     
-    // Draw Current Run Gold
     ctx.fillStyle = 'gold';
-    ctx.fillText(`GOLD: ${s.player.gold}`, 10, 50);
+    ctx.fillText(`GOLD: ${s.player.gold} (Bank: ${userGold})`, 10, 50);
 
-    // Draw Nukes
     if (s.player.nukes > 0) {
         ctx.fillStyle = 'orange';
         ctx.fillText(`NUKES: ${s.player.nukes}`, 10, 70);
     }
 
-    // Draw Lives
     ctx.fillStyle = '#FF1493';
     ctx.fillText(`LIVES: ${s.player.lives}`, 10, 90);
   };
@@ -812,7 +971,8 @@ export const RiverRaidGame: React.FC = () => {
         const ctx = canvas.getContext('2d');
         if (ctx) draw(ctx);
     }
-    if (state.current.gameState === GameState.PLAYING) {
+    // Loop if Playing OR Shop (to draw background while paused)
+    if (state.current.gameState === GameState.PLAYING || state.current.gameState === GameState.SHOP) {
         requestRef.current = requestAnimationFrame(gameLoop);
     }
   };
@@ -847,7 +1007,7 @@ export const RiverRaidGame: React.FC = () => {
     const { error } = await supabase.from('scores').insert([{
         name: inputValue.trim(),
         score: state.current.player.score,
-        ip_address: userIpRef.current // IP is still sent securely
+        ip_address: userIpRef.current 
     }]);
 
     if (error) {
@@ -861,8 +1021,29 @@ export const RiverRaidGame: React.FC = () => {
   };
 
   // --- Shop Logic ---
-  const openShop = () => {
-    setUiGameState(GameState.SHOP);
+  const toggleShop = () => {
+      // If currently playing, PAUSE and open shop
+      if (state.current.gameState === GameState.PLAYING) {
+          state.current.wasPlayingBeforeShop = true;
+          state.current.gameState = GameState.SHOP;
+          setUiGameState(GameState.SHOP);
+      } 
+      // If currently in Shop, determine where to go back
+      else if (state.current.gameState === GameState.SHOP) {
+          if (state.current.wasPlayingBeforeShop) {
+              state.current.gameState = GameState.PLAYING;
+              state.current.wasPlayingBeforeShop = false;
+              setUiGameState(GameState.PLAYING);
+          } else {
+              setUiGameState(GameState.START);
+              state.current.gameState = GameState.START;
+          }
+      } 
+      // If Start or Game Over, open shop normally
+      else if (uiGameState === GameState.START || uiGameState === GameState.GAME_OVER) {
+          state.current.wasPlayingBeforeShop = false;
+          setUiGameState(GameState.SHOP);
+      }
   };
 
   const buyItem = (item: 'weapon_double' | 'weapon_spread' | 'weapon_helix' | 'shield' | 'nuke' | 'life') => {
@@ -899,12 +1080,7 @@ export const RiverRaidGame: React.FC = () => {
      } else if (item === 'life') {
          if (userGold >= 50) {
               setUserGold(prev => { const n = prev - 50; localStorage.setItem('riverRaidGold', n.toString()); return n; });
-              setInventory(prev => ({ ...prev, extraLives: prev.extraLives + 1 })); // Only for next game start logically or add immediately? 
-              // Simplification: In 'startGame' lives are set to 5. 
-              // If purchased in shop (Game Over screen), we probably want it to persist to next game.
-              // For now, let's just make it add to current player stats if playing, but we are in shop only when not playing usually.
-              // Let's increment a 'startingLivesBonus' or similar? 
-              // Better: Just save it to inventory and add to 5 at start.
+              setInventory(prev => ({ ...prev, extraLives: prev.extraLives + 1 })); 
               playSound('buy');
          }
      }
@@ -935,6 +1111,7 @@ export const RiverRaidGame: React.FC = () => {
                 START MISSION
             </button>
             <div className="text-zinc-500 text-[10px] mt-4">LIVES: 5 {inventory.extraLives > 0 ? `+ ${inventory.extraLives} BONUS` : ''}</div>
+            <div className="text-zinc-500 text-[10px] mt-1">PRESS 'M' FOR MARKET</div>
             {inventory.hasShield && <div className="text-cyan-400 text-xs mt-2">SHIELD ACTIVE</div>}
             {inventory.nukes > 0 && <div className="text-orange-400 text-xs mt-1">NUKES: {inventory.nukes}</div>}
             </div>
@@ -971,18 +1148,22 @@ export const RiverRaidGame: React.FC = () => {
                 TRY AGAIN
             </button>
             <button 
-                onClick={openShop}
+                onClick={toggleShop}
                 className="text-xs text-blue-400 underline"
             >
-                GO TO MARKET
+                GO TO MARKET (PRESS M)
             </button>
             </div>
         )}
         
         {uiGameState === GameState.SHOP && (
-             <div className="absolute inset-0 flex flex-col items-center justify-start bg-zinc-900 z-20 p-4 overflow-y-auto">
+             <div className="absolute inset-0 flex flex-col items-center justify-start bg-zinc-900/90 z-20 p-4 overflow-y-auto">
                 <h2 className="text-2xl text-blue-400 mb-2 font-bold sticky top-0 bg-zinc-900 w-full text-center pb-2">MARKET</h2>
                 <div className="text-yellow-400 mb-4 sticky top-10 bg-zinc-900 w-full text-center pb-2 border-b border-zinc-700">BALANCE: {userGold} G</div>
+                
+                {state.current.wasPlayingBeforeShop && (
+                    <div className="text-green-400 text-xs font-bold mb-2 animate-pulse">GAME PAUSED</div>
+                )}
 
                 <div className="w-full max-w-xs space-y-3 pb-8">
                     {/* Double Gun */}
@@ -1077,10 +1258,10 @@ export const RiverRaidGame: React.FC = () => {
                 </div>
 
                 <button 
-                    onClick={() => setUiGameState(GameState.START)}
-                    className="mt-auto px-6 py-3 bg-zinc-700 text-white font-bold rounded border border-zinc-500 w-full"
+                    onClick={toggleShop}
+                    className={`mt-auto px-6 py-3 font-bold rounded border border-zinc-500 w-full ${state.current.wasPlayingBeforeShop ? 'bg-green-600 text-white' : 'bg-zinc-700 text-white'}`}
                 >
-                    BACK
+                    {state.current.wasPlayingBeforeShop ? "RESUME MISSION (M)" : "BACK (M)"}
                 </button>
              </div>
         )}
@@ -1184,7 +1365,7 @@ export const RiverRaidGame: React.FC = () => {
                     </button>
 
                     <button 
-                        onClick={openShop}
+                        onClick={toggleShop}
                         className="w-20 h-8 bg-blue-900 rounded border-b-2 border-blue-950 active:border-0 active:translate-y-0.5 text-[8px] text-white font-bold tracking-widest shadow"
                     >
                         MARKET

@@ -26,8 +26,12 @@ export const RiverRaidGame: React.FC = () => {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [saveStatus, setSaveStatus] = useState<string>(""); 
   
+  // Economy State
+  const [userGold, setUserGold] = useState<number>(0);
+  const [purchasedWeapon, setPurchasedWeapon] = useState<WeaponType>(WeaponType.SINGLE);
+
   // Input Controls State
-  const [controlMode, setControlMode] = useState<'TOUCH' | 'KEYBOARD'>('KEYBOARD');
+  const [controlMode, setControlMode] = useState<'TOUCH' | 'KEYBOARD'>('TOUCH'); // Default to TOUCH/HYBRID for visible controls
 
   // Audio Context
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -72,7 +76,13 @@ export const RiverRaidGame: React.FC = () => {
 
   // --- Initialization & IP Fetch ---
   useEffect(() => {
-    // 1. Simple IP Fetch (Non-blocking, Hidden from UI)
+    // 1. Load Gold from LocalStorage
+    const storedGold = localStorage.getItem('riverRaidGold');
+    if (storedGold) {
+        setUserGold(parseInt(storedGold, 10));
+    }
+
+    // 2. Simple IP Fetch
     fetch('https://api.ipify.org?format=json')
         .then(res => res.json())
         .then(data => { 
@@ -80,7 +90,7 @@ export const RiverRaidGame: React.FC = () => {
         })
         .catch(() => { /* Silent fail */ });
 
-    // 2. Init Audio on interaction
+    // 3. Init Audio
     const initAudio = () => {
         if (!audioCtxRef.current) {
             audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -90,15 +100,22 @@ export const RiverRaidGame: React.FC = () => {
     window.addEventListener('keydown', initAudio, { once: true });
     window.addEventListener('touchstart', initAudio, { once: true });
 
-    // 3. Cleanup on unmount
+    // 4. Cleanup
     return () => {
         if (requestRef.current) cancelAnimationFrame(requestRef.current);
         if (audioCtxRef.current) audioCtxRef.current.close();
     }
   }, []);
 
+  // --- Persist Gold ---
+  const addGold = (amount: number) => {
+      const newGold = userGold + amount;
+      setUserGold(newGold);
+      localStorage.setItem('riverRaidGold', newGold.toString());
+  };
+
   // --- Sound Synthesis ---
-  const playSound = (type: 'shoot' | 'explosion' | 'fuel' | 'coin') => {
+  const playSound = (type: 'shoot' | 'explosion' | 'fuel' | 'coin' | 'buy') => {
     if (!audioCtxRef.current) return;
     const ctx = audioCtxRef.current;
     if (ctx.state === 'suspended') ctx.resume();
@@ -143,6 +160,14 @@ export const RiverRaidGame: React.FC = () => {
       gain.gain.linearRampToValueAtTime(0, now + 0.1);
       osc.start(now);
       osc.stop(now + 0.1);
+    } else if (type === 'buy') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(600, now);
+        osc.frequency.linearRampToValueAtTime(1200, now + 0.2);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.2);
+        osc.start(now);
+        osc.stop(now + 0.2);
     }
   };
 
@@ -164,11 +189,11 @@ export const RiverRaidGame: React.FC = () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [uiGameState]);
+  }, [uiGameState, purchasedWeapon]); // Dependency added for weapon carry-over
 
   // --- Touch Button Handler ---
   const handleTouchBtn = (code: string, isPressed: boolean, e: React.TouchEvent | React.MouseEvent) => {
-      if (e.cancelable) e.preventDefault(); // Prevent scrolling
+      if (e.cancelable && e.type.startsWith('touch')) e.preventDefault(); 
       state.current.keys[code] = isPressed;
   };
 
@@ -186,13 +211,13 @@ export const RiverRaidGame: React.FC = () => {
         vy: 0,
         speedY: 0,
         fuel: MAX_FUEL,
-        lives: 5,
+        lives: 5, // Set to 5 lives as requested
         score: 0,
-        gold: 0,
+        gold: 0, // In-game session gold
         isInvulnerable: false,
         invulnerableTimer: 0,
         markedForDeletion: false,
-        weaponType: WeaponType.SINGLE,
+        weaponType: purchasedWeapon, // Use purchased weapon
       },
       bullets: [],
       enemies: [],
@@ -211,7 +236,10 @@ export const RiverRaidGame: React.FC = () => {
     setUiGameState(GameState.PLAYING);
     setSaveStatus("");
     
-    // Initial river generation
+    // Reset weapon purchase state after use (optional, or keep it perma?) 
+    // Let's keep it until game over, then user has to buy again or maybe it's a one-time consummable.
+    // For this implementation: Weapon resets on Game Over unless bought again.
+    
     state.current.riverSegments = []; 
     for (let i = 0; i < CANVAS_HEIGHT / RIVER_SEGMENT_HEIGHT + 5; i++) {
         generateRiverSegment(CANVAS_HEIGHT - i * RIVER_SEGMENT_HEIGHT);
@@ -346,14 +374,14 @@ export const RiverRaidGame: React.FC = () => {
     // Shooting
     const now = Date.now();
     if ((keys['Space'] || keys['KeyZ']) && now - s.lastShotTime > 200) { 
-       s.bullets.push({
-           x: s.player.x + PLAYER_WIDTH / 2 - 4,
-           y: s.player.y,
-           width: 8, height: 16,
-           vx: 0, vy: -12,
-           isEnemy: false,
-           markedForDeletion: false
-       });
+       // Weapon Logic
+       if (s.player.weaponType === WeaponType.SPREAD) {
+            s.bullets.push({ x: s.player.x + PLAYER_WIDTH/2 - 4, y: s.player.y, width: 8, height: 16, vx: 0, vy: -12, isEnemy: false, markedForDeletion: false });
+            s.bullets.push({ x: s.player.x + PLAYER_WIDTH/2 - 4, y: s.player.y, width: 8, height: 16, vx: -2, vy: -10, isEnemy: false, markedForDeletion: false });
+            s.bullets.push({ x: s.player.x + PLAYER_WIDTH/2 - 4, y: s.player.y, width: 8, height: 16, vx: 2, vy: -10, isEnemy: false, markedForDeletion: false });
+       } else {
+            s.bullets.push({ x: s.player.x + PLAYER_WIDTH/2 - 4, y: s.player.y, width: 8, height: 16, vx: 0, vy: -12, isEnemy: false, markedForDeletion: false });
+       }
        s.lastShotTime = now;
        playSound('shoot');
     }
@@ -489,6 +517,11 @@ export const RiverRaidGame: React.FC = () => {
       console.log("Game Over:", reason);
       state.current.gameState = GameState.GAME_OVER;
       setUiGameState(GameState.GAME_OVER);
+      
+      // Save collected gold to permanent storage
+      addGold(state.current.player.gold);
+      setPurchasedWeapon(WeaponType.SINGLE); // Reset weapon on death
+      
       cancelAnimationFrame(requestRef.current);
   };
 
@@ -553,6 +586,9 @@ export const RiverRaidGame: React.FC = () => {
             ctx.beginPath();
             ctx.arc(e.x + e.width/2, e.y + e.height/2, 10, 0, Math.PI * 2);
             ctx.fill();
+            ctx.strokeStyle = '#DAA520';
+            ctx.lineWidth = 2;
+            ctx.stroke();
         } else {
             ctx.fillRect(e.x, e.y, e.width, e.height);
         }
@@ -593,6 +629,10 @@ export const RiverRaidGame: React.FC = () => {
 
     ctx.fillStyle = 'white';
     ctx.fillText(`SCORE: ${s.player.score}`, 10, 30);
+    
+    // Draw Current Run Gold
+    ctx.fillStyle = 'gold';
+    ctx.fillText(`GOLD: ${s.player.gold}`, 10, 50);
   };
 
   const gameLoop = () => {
@@ -650,11 +690,41 @@ export const RiverRaidGame: React.FC = () => {
     }
   };
 
+  // --- Shop Logic ---
+  const openShop = () => {
+    setUiGameState(GameState.SHOP);
+  };
+
+  const buyItem = (item: 'weapon' | 'life') => {
+     if (item === 'weapon') {
+         if (userGold >= 10 && purchasedWeapon !== WeaponType.SPREAD) {
+             setUserGold(prev => {
+                 const newVal = prev - 10;
+                 localStorage.setItem('riverRaidGold', newVal.toString());
+                 return newVal;
+             });
+             setPurchasedWeapon(WeaponType.SPREAD);
+             playSound('buy');
+         }
+     } else if (item === 'life') {
+         if (userGold >= 5) {
+             setUserGold(prev => {
+                 const newVal = prev - 5;
+                 localStorage.setItem('riverRaidGold', newVal.toString());
+                 return newVal;
+             });
+             state.current.player.lives += 1; // Usually applied on next game, but here we just store concept
+             playSound('buy');
+         }
+     }
+  };
+
   // --- Render ---
   return (
-    <div className="relative w-full h-full bg-zinc-900 overflow-hidden flex flex-col">
-      {/* Game Container - Flexible height */}
-      <div className="relative flex-1 w-full bg-black overflow-hidden min-h-0 border-b-4 border-zinc-800">
+    <div className="relative w-full h-full bg-zinc-900 overflow-hidden flex flex-col items-center justify-center">
+      
+      {/* 1. TOP: Game Screen (Canvas) */}
+      <div className="relative w-full max-w-[600px] bg-black border-4 border-zinc-800 rounded-t-xl overflow-hidden shadow-2xl" style={{ flex: '3' }}>
         <canvas
             ref={canvasRef}
             width={CANVAS_WIDTH}
@@ -662,26 +732,26 @@ export const RiverRaidGame: React.FC = () => {
             className="w-full h-full object-contain mx-auto block bg-[#228B22]"
         />
 
+        {/* Overlay Screens */}
         {uiGameState === GameState.START && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-20">
-            <h2 className="text-4xl text-yellow-400 mb-8 animate-pulse">RIVER RAID</h2>
+            <h2 className="text-4xl text-yellow-400 mb-8 animate-pulse text-center font-bold tracking-tighter">RIVER RAID</h2>
+            <div className="text-yellow-200 mb-4 text-sm">BALANCE: {userGold} GOLD</div>
             <button 
                 onClick={startGame}
-                className="px-8 py-4 bg-red-600 text-white text-xl font-bold rounded hover:bg-red-500 transition-colors mb-4 border-4 border-red-800"
+                className="px-8 py-4 bg-red-600 text-white text-xl font-bold rounded hover:bg-red-500 transition-colors mb-4 border-4 border-red-800 shadow-[0_0_15px_rgba(255,0,0,0.5)]"
             >
                 START MISSION
             </button>
-            <div className="flex gap-4 mt-4">
-                <button onClick={() => setControlMode('KEYBOARD')} className={`px-3 py-1 text-xs ${controlMode==='KEYBOARD' ? 'bg-zinc-600 text-white':'bg-zinc-900 text-zinc-500'}`}>KEYS</button>
-                <button onClick={() => setControlMode('TOUCH')} className={`px-3 py-1 text-xs ${controlMode==='TOUCH' ? 'bg-zinc-600 text-white':'bg-zinc-900 text-zinc-500'}`}>TOUCH</button>
-            </div>
+            <div className="text-zinc-500 text-[10px] mt-4">LIVES: 5</div>
             </div>
         )}
 
         {uiGameState === GameState.GAME_OVER && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-20 p-4">
-            <h2 className="text-3xl text-red-500 mb-4">GAME OVER</h2>
-            <p className="text-white mb-6">FINAL SCORE: {state.current.player.score}</p>
+            <h2 className="text-3xl text-red-500 mb-4 font-bold">GAME OVER</h2>
+            <p className="text-white mb-2">FINAL SCORE: {state.current.player.score}</p>
+            <p className="text-yellow-400 mb-6 text-sm">+ {state.current.player.gold} GOLD EARNED</p>
             
             <div className="flex flex-col gap-2 w-full max-w-xs mb-6">
                 <input 
@@ -703,16 +773,62 @@ export const RiverRaidGame: React.FC = () => {
 
             <button 
                 onClick={startGame}
-                className="px-6 py-2 bg-yellow-600 text-black font-bold rounded hover:bg-yellow-500"
+                className="px-6 py-2 bg-yellow-600 text-black font-bold rounded hover:bg-yellow-500 mb-4"
             >
                 TRY AGAIN
             </button>
+            <button 
+                onClick={openShop}
+                className="text-xs text-blue-400 underline"
+            >
+                GO TO MARKET
+            </button>
             </div>
+        )}
+        
+        {uiGameState === GameState.SHOP && (
+             <div className="absolute inset-0 flex flex-col items-center justify-start bg-zinc-900 z-20 p-8">
+                <h2 className="text-2xl text-blue-400 mb-2 font-bold">MARKET</h2>
+                <div className="text-yellow-400 mb-6">BALANCE: {userGold} G</div>
+
+                <div className="w-full max-w-xs space-y-4">
+                    <div className="bg-zinc-800 p-3 rounded border border-zinc-700 flex justify-between items-center">
+                        <div>
+                            <div className="text-white text-sm">SPREAD GUN</div>
+                            <div className="text-zinc-500 text-[10px]">Triple shot power</div>
+                        </div>
+                        <button 
+                            onClick={() => buyItem('weapon')}
+                            disabled={purchasedWeapon === WeaponType.SPREAD || userGold < 10}
+                            className={`px-3 py-1 rounded text-xs font-bold ${purchasedWeapon === WeaponType.SPREAD ? 'bg-green-900 text-green-200' : 'bg-yellow-600 text-black'}`}
+                        >
+                            {purchasedWeapon === WeaponType.SPREAD ? 'OWNED' : '10 G'}
+                        </button>
+                    </div>
+
+                    {/* Note: Buying life here is symbolic as lives reset on StartGame in this simple version, 
+                        but we allow spending gold to simulate economy functionality */}
+                    <div className="bg-zinc-800 p-3 rounded border border-zinc-700 flex justify-between items-center opacity-50 pointer-events-none">
+                         <div>
+                            <div className="text-white text-sm">EXTRA LIFE</div>
+                            <div className="text-zinc-500 text-[10px]">Start with +1 Life</div>
+                        </div>
+                         <button className="px-3 py-1 bg-zinc-600 text-zinc-400 rounded text-xs font-bold">SOON</button>
+                    </div>
+                </div>
+
+                <button 
+                    onClick={() => setUiGameState(GameState.START)}
+                    className="mt-auto px-6 py-3 bg-zinc-700 text-white font-bold rounded border border-zinc-500"
+                >
+                    BACK
+                </button>
+             </div>
         )}
 
         {uiGameState === GameState.LEADERBOARD_INPUT && (
             <div className="absolute inset-0 flex flex-col items-center justify-start bg-zinc-900 z-20 p-8 overflow-y-auto">
-                <h2 className="text-2xl text-yellow-400 mb-6">TOP PILOTS</h2>
+                <h2 className="text-2xl text-yellow-400 mb-6 font-bold">TOP PILOTS</h2>
                 {loadingScores ? (
                     <p className="text-zinc-500">Loading data...</p>
                 ) : (
@@ -745,15 +861,18 @@ export const RiverRaidGame: React.FC = () => {
         )}
       </div>
 
-      {/* Separate Control Panel (Outside Canvas) */}
-      {controlMode === 'TOUCH' && (
-        <div className="shrink-0 h-[180px] bg-zinc-900 p-4 flex items-center justify-between select-none w-full max-w-[600px] mx-auto border-t-2 border-zinc-800 shadow-[inset_0_10px_20px_rgba(0,0,0,0.5)]">
-            {/* D-Pad */}
-            <div className="grid grid-cols-3 gap-2">
-                {/* UP */}
-                <div className="col-start-2">
+      {/* 2. BOTTOM: Control Panel (Totally separate div) */}
+      <div className="w-full max-w-[600px] bg-zinc-800 border-x-4 border-b-4 border-zinc-800 rounded-b-xl p-4 flex flex-col gap-2 shadow-2xl relative z-10" style={{ flex: '1', minHeight: '200px' }}>
+         {/* Decorative Lines */}
+         <div className="w-full h-1 bg-black/20 mb-2"></div>
+         
+         <div className="flex items-center justify-between h-full px-4">
+            {/* D-PAD */}
+            <div className="grid grid-cols-3 gap-1 w-32 h-32 bg-zinc-700/50 p-2 rounded-full shadow-inner">
+                 {/* UP */}
+                 <div className="col-start-2">
                     <button 
-                    className="w-14 h-14 bg-zinc-800 border-b-4 border-zinc-950 rounded-lg active:bg-zinc-700 active:border-b-0 active:translate-y-1 flex items-center justify-center text-2xl text-zinc-400 hover:text-white transition-all"
+                    className="w-full h-full bg-zinc-900 border border-zinc-600 rounded hover:bg-zinc-800 active:bg-black active:scale-95 transition-all flex items-center justify-center text-zinc-500"
                     onTouchStart={(e) => handleTouchBtn('ArrowUp', true, e)}
                     onTouchEnd={(e) => handleTouchBtn('ArrowUp', false, e)}
                     onMouseDown={(e) => handleTouchBtn('ArrowUp', true, e)}
@@ -763,7 +882,7 @@ export const RiverRaidGame: React.FC = () => {
                 {/* LEFT */}
                 <div className="col-start-1 row-start-2">
                     <button 
-                    className="w-14 h-14 bg-zinc-800 border-b-4 border-zinc-950 rounded-lg active:bg-zinc-700 active:border-b-0 active:translate-y-1 flex items-center justify-center text-2xl text-zinc-400 hover:text-white transition-all"
+                    className="w-full h-full bg-zinc-900 border border-zinc-600 rounded hover:bg-zinc-800 active:bg-black active:scale-95 transition-all flex items-center justify-center text-zinc-500"
                     onTouchStart={(e) => handleTouchBtn('ArrowLeft', true, e)}
                     onTouchEnd={(e) => handleTouchBtn('ArrowLeft', false, e)}
                     onMouseDown={(e) => handleTouchBtn('ArrowLeft', true, e)}
@@ -773,7 +892,7 @@ export const RiverRaidGame: React.FC = () => {
                 {/* RIGHT */}
                 <div className="col-start-3 row-start-2">
                     <button 
-                    className="w-14 h-14 bg-zinc-800 border-b-4 border-zinc-950 rounded-lg active:bg-zinc-700 active:border-b-0 active:translate-y-1 flex items-center justify-center text-2xl text-zinc-400 hover:text-white transition-all"
+                    className="w-full h-full bg-zinc-900 border border-zinc-600 rounded hover:bg-zinc-800 active:bg-black active:scale-95 transition-all flex items-center justify-center text-zinc-500"
                     onTouchStart={(e) => handleTouchBtn('ArrowRight', true, e)}
                     onTouchEnd={(e) => handleTouchBtn('ArrowRight', false, e)}
                     onMouseDown={(e) => handleTouchBtn('ArrowRight', true, e)}
@@ -783,7 +902,7 @@ export const RiverRaidGame: React.FC = () => {
                 {/* DOWN */}
                 <div className="col-start-2 row-start-3">
                     <button 
-                    className="w-14 h-14 bg-zinc-800 border-b-4 border-zinc-950 rounded-lg active:bg-zinc-700 active:border-b-0 active:translate-y-1 flex items-center justify-center text-2xl text-zinc-400 hover:text-white transition-all"
+                    className="w-full h-full bg-zinc-900 border border-zinc-600 rounded hover:bg-zinc-800 active:bg-black active:scale-95 transition-all flex items-center justify-center text-zinc-500"
                     onTouchStart={(e) => handleTouchBtn('ArrowDown', true, e)}
                     onTouchEnd={(e) => handleTouchBtn('ArrowDown', false, e)}
                     onMouseDown={(e) => handleTouchBtn('ArrowDown', true, e)}
@@ -792,10 +911,29 @@ export const RiverRaidGame: React.FC = () => {
                 </div>
             </div>
 
-            {/* Fire Button */}
+            {/* CENTER CONSOLE */}
+            <div className="flex flex-col gap-4 items-center justify-center">
+                <div className="text-zinc-500 font-bold text-xs tracking-widest">CONTROLLER</div>
+                <div className="flex gap-4">
+                    <button 
+                        onClick={openShop}
+                        className="w-16 h-8 bg-blue-900 rounded-full border-b-2 border-blue-950 active:border-0 active:translate-y-0.5 text-[8px] text-white font-bold tracking-widest shadow"
+                    >
+                        MARKET
+                    </button>
+                    <button 
+                        onClick={() => setUiGameState(GameState.START)}
+                        className="w-16 h-8 bg-zinc-600 rounded-full border-b-2 border-zinc-900 active:border-0 active:translate-y-0.5 text-[8px] text-white font-bold tracking-widest shadow"
+                    >
+                        RESET
+                    </button>
+                </div>
+            </div>
+
+            {/* FIRE BTN */}
             <div>
                 <button 
-                className="w-24 h-24 bg-red-700 border-b-8 border-red-900 rounded-full active:bg-red-600 active:border-b-0 active:translate-y-2 shadow-lg flex items-center justify-center font-black text-white tracking-tighter select-none transition-all text-xl"
+                className="w-24 h-24 bg-red-600 border-b-8 border-red-900 rounded-full active:bg-red-700 active:border-b-0 active:translate-y-2 shadow-lg flex items-center justify-center font-black text-white tracking-tighter select-none transition-all text-xl"
                 onTouchStart={(e) => handleTouchBtn('Space', true, e)}
                 onTouchEnd={(e) => handleTouchBtn('Space', false, e)}
                 onMouseDown={(e) => handleTouchBtn('Space', true, e)}
@@ -804,8 +942,8 @@ export const RiverRaidGame: React.FC = () => {
                 FIRE
                 </button>
             </div>
-        </div>
-      )}
+         </div>
+      </div>
     </div>
   );
 };

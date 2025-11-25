@@ -241,6 +241,7 @@ export const RiverRaidGame: React.FC = () => {
   const activateNuke = () => {
       if (state.current.player.nukes > 0) {
           state.current.player.nukes--;
+          // Sync inventory state for React
           setInventory(prev => ({ ...prev, nukes: Math.max(0, prev.nukes - 1) }));
           
           state.current.enemies.forEach(e => {
@@ -250,10 +251,18 @@ export const RiverRaidGame: React.FC = () => {
                       e.markedForDeletion = true;
                       state.current.isBossActive = false;
                       createExplosion(e.x + e.width/2, e.y + e.height/2, 'purple', 50);
+                      state.current.player.score += 2000; // Boss Score
+                      state.current.player.gold += 25;
                   }
-              } else {
+              } else if (e.type !== EnemyType.FUEL_DEPOT && e.type !== EnemyType.GOLD_COIN && e.type !== EnemyType.LIFE_ORB) {
+                // Instantly destroy all non-pickup enemies
                 e.hp = 0; 
+                e.markedForDeletion = true; // FIX: Ensure they are removed
                 createExplosion(e.x + e.width/2, e.y + e.height/2, 'white', 20);
+                
+                // Add Score for Nuke kills
+                if (e.type === EnemyType.KAMIKAZE) state.current.player.score += 300;
+                else state.current.player.score += 100;
               }
           });
           
@@ -1022,66 +1031,88 @@ export const RiverRaidGame: React.FC = () => {
 
   // --- Shop Logic ---
   const toggleShop = () => {
-      // If currently playing, PAUSE and open shop
-      if (state.current.gameState === GameState.PLAYING) {
-          state.current.wasPlayingBeforeShop = true;
-          state.current.gameState = GameState.SHOP;
-          setUiGameState(GameState.SHOP);
-      } 
-      // If currently in Shop, determine where to go back
-      else if (state.current.gameState === GameState.SHOP) {
+      // CHECK IF WE ARE CURRENTLY IN SHOP (Based on UI State)
+      if (uiGameState === GameState.SHOP) {
+          // CLOSE SHOP
           if (state.current.wasPlayingBeforeShop) {
               state.current.gameState = GameState.PLAYING;
               state.current.wasPlayingBeforeShop = false;
               setUiGameState(GameState.PLAYING);
           } else {
-              setUiGameState(GameState.START);
               state.current.gameState = GameState.START;
+              setUiGameState(GameState.START);
           }
-      } 
-      // If Start or Game Over, open shop normally
-      else if (uiGameState === GameState.START || uiGameState === GameState.GAME_OVER) {
-          state.current.wasPlayingBeforeShop = false;
-          setUiGameState(GameState.SHOP);
+      } else {
+          // OPEN SHOP
+          if (state.current.gameState === GameState.PLAYING) {
+              state.current.wasPlayingBeforeShop = true;
+              state.current.gameState = GameState.SHOP;
+              setUiGameState(GameState.SHOP);
+          } else {
+              // Start or Game Over
+              state.current.wasPlayingBeforeShop = false;
+              state.current.gameState = GameState.SHOP; // Sync ref state!
+              setUiGameState(GameState.SHOP);
+          }
       }
   };
 
-  const buyItem = (item: 'weapon_double' | 'weapon_spread' | 'weapon_helix' | 'shield' | 'nuke' | 'life') => {
+  const buyItem = (item: 'weapon_double' | 'weapon_spread' | 'weapon_helix' | 'shield' | 'nuke' | 'life' | 'fuel') => {
+     // If we are mid-game (Shop opened while playing), we must apply changes to state.current.player instantly.
+     const applyToGame = state.current.wasPlayingBeforeShop;
+
      if (item === 'weapon_double') {
          if (userGold >= 15 && purchasedWeapon !== WeaponType.DOUBLE) {
              setUserGold(prev => { const n = prev - 15; localStorage.setItem('riverRaidGold', n.toString()); return n; });
              setPurchasedWeapon(WeaponType.DOUBLE);
+             if (applyToGame) state.current.player.weaponType = WeaponType.DOUBLE;
              playSound('buy');
          }
      } else if (item === 'weapon_spread') {
          if (userGold >= 30 && purchasedWeapon !== WeaponType.SPREAD) {
              setUserGold(prev => { const n = prev - 30; localStorage.setItem('riverRaidGold', n.toString()); return n; });
              setPurchasedWeapon(WeaponType.SPREAD);
+             if (applyToGame) state.current.player.weaponType = WeaponType.SPREAD;
              playSound('buy');
          }
      } else if (item === 'weapon_helix') {
          if (userGold >= 25 && purchasedWeapon !== WeaponType.HELIX) {
              setUserGold(prev => { const n = prev - 25; localStorage.setItem('riverRaidGold', n.toString()); return n; });
              setPurchasedWeapon(WeaponType.HELIX);
+             if (applyToGame) state.current.player.weaponType = WeaponType.HELIX;
              playSound('buy');
          }
      } else if (item === 'shield') {
          if (userGold >= 15 && !inventory.hasShield) {
              setUserGold(prev => { const n = prev - 15; localStorage.setItem('riverRaidGold', n.toString()); return n; });
              setInventory(prev => ({ ...prev, hasShield: true }));
+             if (applyToGame) {
+                 state.current.player.isInvulnerable = true;
+                 state.current.player.invulnerableTimer = 900;
+             }
              playSound('buy');
          }
      } else if (item === 'nuke') {
          if (userGold >= 20) {
              setUserGold(prev => { const n = prev - 20; localStorage.setItem('riverRaidGold', n.toString()); return n; });
              setInventory(prev => ({ ...prev, nukes: prev.nukes + 1 }));
+             if (applyToGame) state.current.player.nukes++;
              playSound('buy');
          }
      } else if (item === 'life') {
          if (userGold >= 50) {
               setUserGold(prev => { const n = prev - 50; localStorage.setItem('riverRaidGold', n.toString()); return n; });
               setInventory(prev => ({ ...prev, extraLives: prev.extraLives + 1 })); 
+              if (applyToGame) state.current.player.lives++;
               playSound('buy');
+         }
+     } else if (item === 'fuel') {
+         if (userGold >= 10) {
+              if (applyToGame && state.current.player.fuel < MAX_FUEL) {
+                  setUserGold(prev => { const n = prev - 10; localStorage.setItem('riverRaidGold', n.toString()); return n; });
+                  state.current.player.fuel = MAX_FUEL;
+                  playSound('fuel');
+              }
          }
      }
   };
@@ -1162,10 +1193,27 @@ export const RiverRaidGame: React.FC = () => {
                 <div className="text-yellow-400 mb-4 sticky top-10 bg-zinc-900 w-full text-center pb-2 border-b border-zinc-700">BALANCE: {userGold} G</div>
                 
                 {state.current.wasPlayingBeforeShop && (
-                    <div className="text-green-400 text-xs font-bold mb-2 animate-pulse">GAME PAUSED</div>
+                    <div className="text-green-400 text-xs font-bold mb-2 animate-pulse">GAME PAUSED - ITEMS APPLY INSTANTLY</div>
                 )}
 
                 <div className="w-full max-w-xs space-y-3 pb-8">
+                    {/* Fuel Refill - Only show if playing because starting a new game resets fuel */}
+                    {state.current.wasPlayingBeforeShop && (
+                        <div className="bg-zinc-800 p-2 rounded border border-zinc-700 flex justify-between items-center">
+                            <div>
+                                <div className="text-white text-xs">FULL TANK</div>
+                                <div className="text-zinc-500 text-[10px]">Refill Fuel Gauge</div>
+                            </div>
+                            <button 
+                                onClick={() => buyItem('fuel')}
+                                disabled={userGold < 10 || state.current.player.fuel >= MAX_FUEL}
+                                className="px-3 py-1 rounded text-xs font-bold bg-orange-600 text-white hover:bg-orange-500 disabled:bg-zinc-700 disabled:text-zinc-500"
+                            >
+                                {state.current.player.fuel >= MAX_FUEL ? 'FULL' : '10 G'}
+                            </button>
+                        </div>
+                    )}
+
                     {/* Double Gun */}
                     <div className="bg-zinc-800 p-2 rounded border border-zinc-700 flex justify-between items-center">
                         <div>

@@ -41,6 +41,9 @@ export const RiverRaidGame: React.FC = () => {
   // User IP Cache (Simple)
   const userIpRef = useRef<string | null>(null);
 
+  // Cheat Code Buffer
+  const cheatBuffer = useRef<string>("");
+
   // Game State Reference (Mutable for performance)
   const state = useRef({
     gameState: GameState.START,
@@ -216,6 +219,33 @@ export const RiverRaidGame: React.FC = () => {
 
       if (uiGameState === GameState.PLAYING && (e.code === 'KeyN')) {
           activateNuke();
+      }
+
+      // CHEAT CODE: "ogg" -> Infinite Lives
+      if (uiGameState === GameState.PLAYING && e.key.length === 1 && /[a-zA-Z]/.test(e.key)) {
+          cheatBuffer.current += e.key.toLowerCase();
+          if (cheatBuffer.current.length > 3) cheatBuffer.current = cheatBuffer.current.slice(-3);
+          
+          if (cheatBuffer.current === "ogg") {
+              state.current.player.lives = 9999;
+              playSound('life');
+              // Visual feedback
+              for (let i = 0; i < 50; i++) {
+                state.current.particles.push({
+                    x: state.current.player.x + PLAYER_WIDTH/2,
+                    y: state.current.player.y + PLAYER_HEIGHT/2,
+                    width: 4, height: 4,
+                    vx: (Math.random() - 0.5) * 15,
+                    vy: (Math.random() - 0.5) * 15,
+                    life: 1.5,
+                    color: '#00FF00', // Lime Green
+                    size: Math.random() * 5 + 2,
+                    markedForDeletion: false
+                });
+              }
+              cheatBuffer.current = ""; // Reset
+              console.log("CHEAT ACTIVATED: INFINITE LIVES");
+          }
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {

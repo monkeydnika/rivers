@@ -85,7 +85,9 @@ export const RiverRaidGame: React.FC = () => {
     bossCount: 0,
     lastShotTime: 0,
     nukeFlashTimer: 0,
-    wasPlayingBeforeShop: false // Track state to resume correctly
+    wasPlayingBeforeShop: false, // Track state to resume correctly
+    bossWarningTimer: 0,
+    bossWarningText: ""
   });
 
   // --- Initialization & IP Fetch ---
@@ -353,7 +355,9 @@ export const RiverRaidGame: React.FC = () => {
       bossCount: 0,
       lastShotTime: 0,
       nukeFlashTimer: 0,
-      wasPlayingBeforeShop: false
+      wasPlayingBeforeShop: false,
+      bossWarningTimer: 0,
+      bossWarningText: ""
     };
 
     // Reset single-use items after applying
@@ -408,6 +412,17 @@ export const RiverRaidGame: React.FC = () => {
 
       state.current.isBossActive = true;
       state.current.bossCount++;
+
+      // Boss Warning Logic
+      state.current.bossWarningTimer = 180; // 3 Seconds
+      const warnings = [
+          "DEATH CALLS YOU!",
+          "NO ESCAPE!",
+          "THE END IS HERE!",
+          "NIGHTMARE BEGINS!",
+          "YOUR SOUL IS MINE!"
+      ];
+      state.current.bossWarningText = warnings[Math.floor(Math.random() * warnings.length)];
       
       // Boss Scales: More HP and faster shooting
       const bossHp = 3 + (state.current.bossCount - 1) * 2; 
@@ -550,6 +565,7 @@ export const RiverRaidGame: React.FC = () => {
     }
 
     if (s.nukeFlashTimer > 0) s.nukeFlashTimer--;
+    if (s.bossWarningTimer > 0) s.bossWarningTimer--;
 
     // Update invulnerability
     if (s.player.isInvulnerable) {
@@ -885,15 +901,24 @@ export const RiverRaidGame: React.FC = () => {
     const s = state.current;
     
     // --- DETERMINE COLORS BASED ON TIME ---
-    const isDark = s.frameCount > DARK_MODE_THRESHOLD;
-    const isSnow = s.frameCount > SNOW_MODE_THRESHOLD;
+    // Force dark mode if Boss is active
+    const isBossMode = s.isBossActive;
+    const isDark = s.frameCount > DARK_MODE_THRESHOLD || isBossMode;
+    // Disable snow if boss is active to ensure the dark atmosphere prevails
+    const isSnow = s.frameCount > SNOW_MODE_THRESHOLD && !isBossMode;
     
     // Background (Land)
-    if (isSnow) ctx.fillStyle = '#E5E4E2'; // Platinum/Snow
-    else if (isDark) ctx.fillStyle = '#050505'; 
-    else ctx.fillStyle = '#228B22'; 
-    
+    let bgFill = '#228B22'; // Default Forest Green
+    if (isSnow) bgFill = '#E5E4E2'; // Platinum/Snow
+    else if (isDark) bgFill = '#050505'; // Night Black
+
+    ctx.fillStyle = bgFill;
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // Sync CSS background to match land color (fixes letterboxing/edges)
+    if (canvasRef.current) {
+        canvasRef.current.style.backgroundColor = bgFill;
+    }
 
     // River
     if (isSnow) ctx.fillStyle = '#ADD8E6'; // Icy Light Blue
@@ -1108,6 +1133,36 @@ export const RiverRaidGame: React.FC = () => {
     if (s.nukeFlashTimer > 0) {
         ctx.fillStyle = `rgba(255, 255, 255, ${s.nukeFlashTimer / 10})`;
         ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    }
+    
+    // --- BOSS WARNING DISPLAY ---
+    if (s.bossWarningTimer > 0) {
+        ctx.save();
+        ctx.translate(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 3);
+        
+        // Glitch Shake Effect
+        if (Math.random() > 0.5) {
+            ctx.translate((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10);
+        }
+
+        // Pulse Scale Effect
+        const scale = 1 + Math.sin(s.frameCount * 0.2) * 0.2;
+        ctx.scale(scale, scale);
+
+        ctx.font = '30px "Press Start 2P"';
+        ctx.fillStyle = '#FF0000'; // Red
+        ctx.textAlign = 'center';
+        ctx.shadowColor = 'black';
+        ctx.shadowBlur = 10;
+        ctx.lineWidth = 3;
+        ctx.strokeText(s.bossWarningText, 0, 0);
+        ctx.fillText(s.bossWarningText, 0, 0);
+        
+        ctx.font = '15px "Press Start 2P"';
+        ctx.fillStyle = 'white';
+        ctx.fillText("DANGER APPROACHING", 0, 40);
+
+        ctx.restore();
     }
 
     // UI Overlay (Fuel)

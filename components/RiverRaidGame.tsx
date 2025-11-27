@@ -659,24 +659,70 @@ export const RiverRaidGame: React.FC = () => {
     s.enemies.forEach(e => {
         // --- BOSS LOGIC ---
         if (e.type === EnemyType.BOSS) {
+            // Enter screen
             if (e.y < 80) {
                 e.y += 2;
             } else {
-                e.y = 80; 
-                e.x += Math.sin(s.frameCount * 0.05) * 3;
-                if (e.x < 20) e.x = 20;
-                if (e.x > CANVAS_WIDTH - e.width - 20) e.x = CANVAS_WIDTH - e.width - 20;
+                e.y = 80;
+                
+                // Determine Boss Type based on count (3 variations)
+                const bossVariant = (s.bossCount - 1) % 3;
+
+                if (bossVariant === 0) {
+                    // TYPE 1: CLASSIC (Sine Wave)
+                    e.x += Math.sin(s.frameCount * 0.05) * 3;
+                    if (e.x < 20) e.x = 20;
+                    if (e.x > CANVAS_WIDTH - e.width - 20) e.x = CANVAS_WIDTH - e.width - 20;
+                } else if (bossVariant === 1) {
+                    // TYPE 2: HUNTER (Tracks Player Horizontal)
+                    // Moves faster towards player's X
+                    const targetX = s.player.x + s.player.width / 2 - e.width / 2;
+                    const diff = targetX - e.x;
+                    e.x += diff * 0.05; // Lerp
+                    // Clamp
+                    if (e.x < 20) e.x = 20;
+                    if (e.x > CANVAS_WIDTH - e.width - 20) e.x = CANVAS_WIDTH - e.width - 20;
+                } else {
+                    // TYPE 3: TANK (Slow, slight drift)
+                    e.x += Math.sin(s.frameCount * 0.02) * 1.5;
+                    if (e.x < 20) e.x = 20;
+                    if (e.x > CANVAS_WIDTH - e.width - 20) e.x = CANVAS_WIDTH - e.width - 20;
+                }
             }
 
             e.shootTimer--;
             if (e.shootTimer <= 0) {
-                // Shoot frequency scales with boss difficulty
-                e.shootTimer = Math.max(30, 90 - (s.bossCount * 5)); 
+                // Determine Boss Type
+                const bossVariant = (s.bossCount - 1) % 3;
+                
+                // Reset timer based on type
+                // Variant 1 shoots faster, Variant 2 shoots slower but wider
+                let baseFreq = Math.max(30, 90 - (s.bossCount * 5)); 
+                if (bossVariant === 1) baseFreq *= 0.7; // Fast fire
+                if (bossVariant === 2) baseFreq *= 1.3; // Slow fire
+
+                e.shootTimer = baseFreq; 
+
                 const bx = e.x + e.width / 2 - 4;
                 const by = e.y + e.height;
-                s.bullets.push({ x: bx, y: by, width: 8, height: 16, vx: 0, vy: 6, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
-                s.bullets.push({ x: bx, y: by, width: 8, height: 16, vx: -3, vy: 5, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
-                s.bullets.push({ x: bx, y: by, width: 8, height: 16, vx: 3, vy: 5, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+
+                if (bossVariant === 0) {
+                    // Classic 3-way
+                    s.bullets.push({ x: bx, y: by, width: 8, height: 16, vx: 0, vy: 6, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                    s.bullets.push({ x: bx, y: by, width: 8, height: 16, vx: -3, vy: 5, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                    s.bullets.push({ x: bx, y: by, width: 8, height: 16, vx: 3, vy: 5, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                } else if (bossVariant === 1) {
+                    // Tracking Hunter - 2 fast straight bullets aimed near player
+                    s.bullets.push({ x: bx - 10, y: by, width: 6, height: 14, vx: 0, vy: 9, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                    s.bullets.push({ x: bx + 10, y: by, width: 6, height: 14, vx: 0, vy: 9, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                } else {
+                    // Tank - 5-way Spread
+                    s.bullets.push({ x: bx, y: by, width: 10, height: 18, vx: 0, vy: 5, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                    s.bullets.push({ x: bx, y: by, width: 10, height: 18, vx: -2, vy: 4.5, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                    s.bullets.push({ x: bx, y: by, width: 10, height: 18, vx: 2, vy: 4.5, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                    s.bullets.push({ x: bx, y: by, width: 10, height: 18, vx: -4, vy: 4, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                    s.bullets.push({ x: bx, y: by, width: 10, height: 18, vx: 4, vy: 4, isEnemy: true, markedForDeletion: false, pattern: 'straight' });
+                }
             }
 
         } else if (e.type === EnemyType.KAMIKAZE) {
@@ -1060,17 +1106,53 @@ export const RiverRaidGame: React.FC = () => {
             ctx.stroke();
             ctx.shadowBlur = 0;
         } else if (e.type === EnemyType.BOSS) {
+            // Determine Boss Visual based on Count
+            const bossVariant = (s.bossCount - 1) % 3;
             const cx = e.x + e.width/2;
             const cy = e.y + e.height/2;
-            ctx.beginPath();
-            ctx.moveTo(cx, cy - 20);
-            ctx.lineTo(cx + 30, cy);
-            ctx.lineTo(cx + 40, cy + 20);
-            ctx.lineTo(cx, cy + 30);
-            ctx.lineTo(cx - 40, cy + 20);
-            ctx.lineTo(cx - 30, cy);
-            ctx.closePath();
-            ctx.fill();
+
+            if (bossVariant === 0) {
+                // TYPE 1: CLASSIC (Purple)
+                ctx.fillStyle = '#800080';
+                ctx.beginPath();
+                ctx.moveTo(cx, cy - 20);
+                ctx.lineTo(cx + 30, cy);
+                ctx.lineTo(cx + 40, cy + 20);
+                ctx.lineTo(cx, cy + 30);
+                ctx.lineTo(cx - 40, cy + 20);
+                ctx.lineTo(cx - 30, cy);
+                ctx.closePath();
+                ctx.fill();
+            } else if (bossVariant === 1) {
+                // TYPE 2: CRIMSON HUNTER (Red, Sleek)
+                ctx.fillStyle = '#DC143C'; // Crimson
+                ctx.beginPath();
+                ctx.moveTo(cx, cy + 30); // Tip pointing down
+                ctx.lineTo(cx - 30, cy - 20);
+                ctx.lineTo(cx, cy - 10);
+                ctx.lineTo(cx + 30, cy - 20);
+                ctx.closePath();
+                ctx.fill();
+                // Engine glow
+                ctx.fillStyle = 'yellow';
+                ctx.beginPath();
+                ctx.arc(cx, cy - 15, 5, 0, Math.PI*2);
+                ctx.fill();
+            } else {
+                // TYPE 3: STEEL TITAN (Dark Blue/Grey, Blocky)
+                ctx.fillStyle = '#191970'; // Midnight Blue
+                ctx.fillRect(e.x + 10, e.y, e.width - 20, e.height);
+                ctx.fillStyle = '#708090'; // Slate Grey Turrets
+                ctx.fillRect(e.x, e.y + 10, 20, 30);
+                ctx.fillRect(e.x + e.width - 20, e.y + 10, 20, 30);
+                // Central Eye
+                ctx.fillStyle = 'cyan';
+                ctx.beginPath();
+                ctx.arc(cx, cy, 10, 0, Math.PI*2);
+                ctx.fill();
+            }
+
+            // Health Bar
             ctx.fillStyle = 'red';
             ctx.fillRect(e.x, e.y - 10, e.width, 5);
             ctx.fillStyle = 'green';

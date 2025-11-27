@@ -10,8 +10,8 @@ const PLAYER_WIDTH = 32;
 const PLAYER_HEIGHT = 32;
 const BASE_SCROLL_SPEED = 3; 
 const MAX_FUEL = 100;
-const FUEL_CONSUMPTION_RATE = 0.05;
-const FUEL_REFILL_RATE = 0.8;
+const FUEL_CONSUMPTION_RATE = 0.025; // Decreased by 50% (was 0.05)
+const FUEL_REFILL_RATE = 1.2; // Increased by 50% (was 0.8)
 const RIVER_SEGMENT_HEIGHT = 20;
 const MAX_LEADERBOARD_ENTRIES = 20;
 

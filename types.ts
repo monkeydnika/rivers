@@ -51,7 +51,12 @@ export enum EnemyType {
   LIFE_ORB, // Can toplamak için
   WEAPON_CRATE,
   GOLD_COIN,
-  BOSS
+  BOSS,
+  // NEW PICKUPS
+  ITEM_SHIELD,
+  ITEM_WEAPON_DOUBLE,
+  ITEM_WEAPON_SPREAD,
+  ITEM_WEAPON_HELIX
 }
 
 export interface Enemy extends Entity {

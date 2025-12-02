@@ -894,6 +894,27 @@ export const RiverRaidGame: React.FC = () => {
         if (b.y < 0 || b.y > CANVAS_HEIGHT) b.markedForDeletion = true;
     });
 
+    // Check Bullet vs Bullet Collision (Neutralize)
+    for (let i = 0; i < s.bullets.length; i++) {
+        const b1 = s.bullets[i];
+        if (b1.markedForDeletion) continue;
+
+        for (let j = i + 1; j < s.bullets.length; j++) {
+            const b2 = s.bullets[j];
+            if (b2.markedForDeletion) continue;
+
+            // Check if one is enemy and one is player
+            if (b1.isEnemy !== b2.isEnemy) {
+                if (checkCollision(b1, b2)) {
+                    b1.markedForDeletion = true;
+                    b2.markedForDeletion = true;
+                    // Create a small spark at the collision point
+                    createExplosion((b1.x + b2.x)/2, (b1.y + b2.y)/2, '#CCCCCC', 5);
+                }
+            }
+        }
+    }
+
     s.particles.forEach(p => {
         p.x += p.vx;
         p.y += p.vy;
